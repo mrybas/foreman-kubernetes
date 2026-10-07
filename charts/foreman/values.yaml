@@ -1,0 +1,44 @@
+replicaCount: 1
+
+image:
+  repository: quay.io/foreman/foreman
+  tag: nightly
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+foreman:
+  fqdn: foreman.example.test
+  externalUrl: http://foreman.example.test
+  existingSecret: foreman-runtime
+  databaseUrlSecretKey: DATABASE_URL
+  encryptionKeySecretKey: ENCRYPTION_KEY
+  secretKeyBaseSecretKey: SECRET_KEY_BASE
+  seedAdminUserSecretKey: SEED_ADMIN_USER
+  seedAdminPasswordSecretKey: SEED_ADMIN_PASSWORD
+  database:
+    sslMode: disable
+  puma:
+    workers: 1
+    threadsMin: 5
+    threadsMax: 5
+
+migration:
+  backoffLimit: 2
+  activeDeadlineSeconds: 1200
+
+service:
+  type: ClusterIP
+  port: 3000
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    memory: 2Gi
+
+test:
+  image: curlimages/curl:8.17.0

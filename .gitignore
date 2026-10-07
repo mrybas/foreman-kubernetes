@@ -4,3 +4,5 @@ charts/foreman-stack/charts/
 __pycache__/
 *.pyc
 artifacts/
+.venv/
+.pytest_cache/

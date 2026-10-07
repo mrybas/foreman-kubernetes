@@ -1,0 +1,7 @@
+Foreman is available inside the cluster at:
+
+  http://{{ include "foreman.fullname" . }}:{{ .Values.service.port }}
+
+Run the chart smoke test with:
+
+  helm test {{ .Release.Name }} --namespace {{ .Release.Namespace }} --logs

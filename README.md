@@ -44,6 +44,13 @@ make lint
 This runs `helm lint` on each chart in the repository. CI's **Chart Lint** job
 runs the same `make lint` command.
 
+The first runnable milestone installs core Foreman with a disposable PostgreSQL
+database. Integration tests require a native Linux AMD64 host, Podman, Kind,
+kubectl, Helm 4, and Python 3.10 or newer. See the
+[minimal Foreman quick start](docs/quick-start.md) for setup, test, and cleanup
+commands. CI's **Foreman Installation** job uses those same Makefile targets and
+publishes pytest results as JUnit XML.
+
 ## Status and collaboration
 
 The repository is being established as a sequence of small, reviewable changes.
