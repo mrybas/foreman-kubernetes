@@ -47,10 +47,16 @@ spec:
             - name: {{ .workersEnv }}
               value: {{ .values.workers | quote }}
             {{- end }}
+            {{- with $p.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           volumeMounts:
             {{- include "pulp.configVolumeMount" $ | nindent 12 }}
             - name: storage
               mountPath: /var/lib/pulp
+            {{- with $p.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- if .probePath }}
           startupProbe:
             httpGet:

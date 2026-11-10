@@ -25,6 +25,10 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with .Values.pulp.extraInitContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: migrate
           image: {{ include "pulp.image" . }}
@@ -45,14 +49,23 @@ spec:
             {{- include "pulp.securityContext" . | nindent 12 }}
           env:
             {{- include "pulp.env" . | nindent 12 }}
+            {{- with .Values.pulp.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           volumeMounts:
             {{- include "pulp.configVolumeMount" . | nindent 12 }}
             - name: storage
               mountPath: /var/lib/pulp
+            {{- with .Values.pulp.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           resources:
             {{- toYaml .Values.pulp.migration.resources | nindent 12 }}
       volumes:
         {{- include "pulp.configVolume" (dict "context" . "configMap" (printf "%s-migration-config" (include "pulp.fullname" .))) | nindent 8 }}
         - name: storage
           emptyDir: {}
+        {{- with .Values.pulp.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
 {{- end }}

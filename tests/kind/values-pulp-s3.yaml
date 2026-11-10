@@ -1,0 +1,12 @@
+# Pulp content in the MinIO fixture (tests/kind/dependencies-minio.yaml).
+# run-minimal.sh adds this file and values-pulp-s3-workaround.yaml with
+# PULP_STORAGE=s3.
+pulp:
+  storage:
+    type: s3
+    s3:
+      bucket: pulp
+      endpointUrl: http://minio:9000
+      region: us-east-1
+      addressingStyle: path
+      existingSecret: pulp-s3

@@ -6,8 +6,10 @@ is synced from KATELLO_TEST_REPO_URL, by default the in-cluster fixture that
 tests/kind/rpm-repository.sh creates. The organization is deleted at the end.
 """
 
+import gzip
 import json
 import os
+import re
 import ssl
 import subprocess
 import time
@@ -126,8 +128,9 @@ def test_sync_yum_repository(api, content):
 
 def test_repository_content_needs_an_entitlement_certificate(api, content, httpd, pki,  # noqa: F811
                                                              tmp_path):
-    """Pulp serves the published repository only to clients with a certificate
-    that Candlepin signed, here the organization's debug certificate."""
+    """Pulp serves the published repository and its packages only to clients
+    with a certificate that Candlepin signed, here the organization's debug
+    certificate."""
     step(content, "repository")
     path = urlsplit(content["repository"]["full_path"]).path + "repodata/repomd.xml"
     status, _, _ = https(httpd, api.context, "GET", path)
@@ -144,6 +147,15 @@ def test_repository_content_needs_an_entitlement_certificate(api, content, httpd
     status, _, body = https(httpd, with_cert, "GET", path)
     assert status == 200
     assert b"<repomd" in body
+    # A package, from the Pulp storage backend.
+    base = path.removesuffix("repodata/repomd.xml")
+    primary = re.search(rb'<data type="primary">.*?<location href="([^"]+)"', body, re.S).group(1)
+    status, _, data = https(httpd, with_cert, "GET", base + primary.decode())
+    assert status == 200
+    package = re.search(rb'<location href="([^"]+\.rpm)"', gzip.decompress(data)).group(1)
+    status, _, rpm = https(httpd, with_cert, "GET", base + package.decode())
+    assert status == 200
+    assert rpm[:4] == b"\xed\xab\xee\xdb", rpm[:100]
 
 
 def test_publish_content_view(api, content):

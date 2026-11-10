@@ -359,6 +359,29 @@ settings.py: |
   ALLOWED_EXPORT_PATHS = ["/var/lib/pulp/exports"]
   LOGGING__handlers__console__level = {{ $s.logLevel | upper | toJson }}
   LOGGING__loggers____level = {{ $s.logLevel | upper | toJson }}
+  {{- if eq (include "pulp.storageType" .) "s3" }}
+  {{- $s3 := .Values.pulp.storage.s3 }}
+  {{- $options := dict "bucket_name" $s3.bucket "signature_version" $s3.signatureVersion }}
+  {{- with $s3.endpointUrl }}{{ $_ := set $options "endpoint_url" . }}{{ end }}
+  {{- with $s3.region }}{{ $_ := set $options "region_name" . }}{{ end }}
+  {{- with $s3.addressingStyle }}{{ $_ := set $options "addressing_style" . }}{{ end }}
+  {{- if $s3.caSecret.name }}{{ $_ := set $options "verify" (include "pulp.s3CaPath" .) }}
+  {{- else if not $s3.verify }}{{ $_ := set $options "verify" false }}{{ end }}
+  {{- $options = merge (deepCopy $s3.options) $options }}
+  # Content in S3 or an S3-compatible object store, as in the Pulp storage
+  # documentation. Credentials come from AWS_* environment variables.
+  MEDIA_ROOT = ""
+  STORAGES = {
+      "default": {
+          "BACKEND": "storages.backends.s3.S3Storage",
+          "OPTIONS": {{ include "pulp.pythonLiteral" $options }},
+      },
+      "staticfiles": {
+          "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+      },
+  }
+  REDIRECT_TO_OBJECT_STORAGE = {{ include "pulp.pythonLiteral" $s3.redirectToObjectStorage }}
+  {{- end }}
   {{- with $s.extra }}
   {{- . | nindent 2 }}
   {{- end }}
@@ -384,6 +407,19 @@ settings.py: |
     secretKeyRef:
       name: {{ .Values.pulp.existingSecret }}
       key: {{ .Values.pulp.redisUrlSecretKey }}
+{{- $s3 := .Values.pulp.storage.s3 }}
+{{- if and (eq (include "pulp.storageType" .) "s3") $s3.existingSecret }}
+- name: AWS_ACCESS_KEY_ID
+  valueFrom:
+    secretKeyRef:
+      name: {{ $s3.existingSecret }}
+      key: {{ $s3.accessKeySecretKey }}
+- name: AWS_SECRET_ACCESS_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ $s3.existingSecret }}
+      key: {{ $s3.secretKeySecretKey }}
+{{- end }}
 {{- end }}
 
 {{- define "pulp.podSecurityContext" -}}
@@ -425,6 +461,14 @@ the Secret. Call with (dict "context" $ "configMap" "<name>").
           items:
             - key: {{ .context.Values.pulp.symmetricKeySecretKey }}
               path: certs/database_fields.symmetric.key
+      {{- $ca := .context.Values.pulp.storage.s3.caSecret }}
+      {{- if and (eq (include "pulp.storageType" .context) "s3") $ca.name }}
+      - secret:
+          name: {{ $ca.name }}
+          items:
+            - key: {{ $ca.key }}
+              path: certs/s3-ca.crt
+      {{- end }}
 {{- end }}
 
 {{- define "pulp.configVolumeMount" -}}
@@ -450,7 +494,7 @@ securityContext:
 imagePullSecrets:
   {{- toYaml . | nindent 2 }}
 {{- end }}
-{{- if .Values.pulp.storage.colocate }}
+{{- if and (eq (include "pulp.storageType" .) "filesystem") .Values.pulp.storage.colocate }}
 # The content volume may be ReadWriteOnce, so every Pulp pod runs on the node
 # of a Pulp API pod. The first API pod matches its own term and goes anywhere.
 affinity:
@@ -480,13 +524,64 @@ initContainers:
         memory: 32Mi
       limits:
         memory: 64Mi
+{{- with .Values.pulp.extraInitContainers }}
+{{- toYaml . | nindent 2 }}
+{{- end }}
 {{- end }}
 
 {{- define "pulp.podVolumes" -}}
 {{ include "pulp.configVolume" (dict "context" . "configMap" (printf "%s-config" (include "pulp.fullname" .))) }}
 - name: storage
+{{- if eq (include "pulp.storageType" .) "s3" }}
+  emptyDir: {}
+{{- else }}
   persistentVolumeClaim:
     claimName: {{ include "pulp.claimName" . }}
+{{- end }}
+{{- with .Values.pulp.extraVolumes }}
+{{ toYaml . }}
+{{- end }}
+{{- end }}
+
+{{/* pulp.storage.type, checked: filesystem or s3. */}}
+{{- define "pulp.storageType" -}}
+{{- $storage := .Values.pulp.storage }}
+{{- if not (has $storage.type (list "filesystem" "s3")) }}
+{{- fail (printf "pulp.storage.type must be filesystem or s3, not %v" $storage.type) }}
+{{- end }}
+{{- if and (eq $storage.type "s3") (not $storage.s3.bucket) }}
+{{- fail "pulp.storage.s3.bucket is required with pulp.storage.type s3" }}
+{{- end }}
+{{- if and (eq $storage.type "s3") $storage.s3.caSecret.name (not $storage.s3.verify) }}
+{{- fail "pulp.storage.s3.caSecret and pulp.storage.s3.verify=false exclude each other" }}
+{{- end }}
+{{- range $key := list "access_key" "secret_key" "security_token" "session_token" "session_profile" }}
+{{- if hasKey ($storage.s3.options | default dict) $key }}
+{{- fail (printf "pulp.storage.s3.options.%s would be rendered into a ConfigMap; put S3 credentials in the Secret named by pulp.storage.s3.existingSecret" $key) }}
+{{- end }}
+{{- end }}
+{{- $storage.type }}
+{{- end }}
+
+{{- define "pulp.s3CaPath" -}}
+/etc/pulp/certs/s3-ca.crt
+{{- end }}
+
+{{/*
+A value as a Python literal for settings.py: JSON, except for booleans and
+null. Maps are written with sorted keys.
+*/}}
+{{- define "pulp.pythonLiteral" -}}
+{{- if kindIs "bool" . }}{{ ternary "True" "False" . }}
+{{- else if kindIs "invalid" . }}None
+{{- else if kindIs "map" . }}{
+{{- range $i, $key := keys . | sortAlpha }}{{ if $i }}, {{ end }}{{ $key | toJson }}: {{ include "pulp.pythonLiteral" (get $ $key) }}{{ end -}}
+}
+{{- else if kindIs "slice" . }}[
+{{- range $i, $item := . }}{{ if $i }}, {{ end }}{{ include "pulp.pythonLiteral" $item }}{{ end -}}
+]
+{{- else }}{{ toJson . }}
+{{- end }}
 {{- end }}
 
 {{/* Candlepin. */}}

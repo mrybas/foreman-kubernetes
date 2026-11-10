@@ -81,6 +81,19 @@ case "${1:-}" in
       --dry-run=client --output=yaml | kubectl --context "${context}" apply --filename=-
     # Yum repository the Katello tests sync, served inside the cluster.
     KUBE_CONTEXT="${context}" "${repo_root}/tests/kind/rpm-repository.sh" "${namespace}"
+    # PULP_STORAGE=s3: Pulp content in a MinIO bucket instead of a volume.
+    storage_values=()
+    if [[ "${PULP_STORAGE:-filesystem}" == s3 ]]; then
+      kubectl --context "${context}" --namespace "${namespace}" create secret generic pulp-s3 \
+        --from-literal=AWS_ACCESS_KEY_ID=pulp-test --from-literal=AWS_SECRET_ACCESS_KEY=pulp-s3-test-secret \
+        --dry-run=client --output=yaml | kubectl --context "${context}" apply --filename=-
+      kubectl --context "${context}" --namespace "${namespace}" apply \
+        --filename "${repo_root}/tests/kind/dependencies-minio.yaml"
+      kubectl --context "${context}" --namespace "${namespace}" wait job/minio-bucket \
+        --for=condition=complete --timeout=180s
+      storage_values=(--values "${repo_root}/tests/kind/values-pulp-s3.yaml"
+        --values "${repo_root}/tests/kind/values-pulp-s3-workaround.yaml")
+    fi
     helm upgrade --install "${release}" "${repo_root}/charts/foreman" \
       --kube-context "${context}" --namespace "${namespace}" \
       --set-string foreman.fqdn=foreman.test --set-string foreman.externalUrl=https://foreman.test \
@@ -90,7 +103,7 @@ case "${1:-}" in
       --set katello.enabled=true --set proxy.enabled=true \
       --set-string pulp.settings.smartProxyPulpUrl="https://${release}-foreman-httpd.${namespace}.svc" \
       --set-string pulp.settings.contentOrigin=https://foreman.test \
-      --wait --wait-for-jobs --timeout 30m "${@:2}"
+      ${storage_values[@]+"${storage_values[@]}"} --wait --wait-for-jobs --timeout 30m "${@:2}"
     ;;
   diagnostics)
     require_cluster

@@ -387,9 +387,56 @@ pulp:
         memory: 256Mi
       limits:
         memory: 1Gi
+  # Containers, volumes, volume mounts and environment variables added to the
+  # Pulp API, content and worker pods and to the migration Job.
+  extraInitContainers: []
+  extraVolumes: []
+  extraVolumeMounts: []
+  extraEnv: []
   storage:
-    # PersistentVolumeClaim mounted at /var/lib/pulp by every Pulp pod. With
-    # existingClaim set, the chart creates no claim.
+    # Where Pulp keeps repository content: filesystem or s3. filesystem uses a
+    # PersistentVolumeClaim mounted at /var/lib/pulp by every Pulp pod. s3 uses
+    # a bucket in S3 or an S3-compatible object store (settings under s3), and
+    # each Pulp pod gets an emptyDir at /var/lib/pulp for temporary files. The
+    # Pulp image must contain django-storages and boto3 for s3.
+    type: filesystem
+    s3:
+      # Required with type s3.
+      bucket: ""
+      # Leave empty for AWS S3. For other object stores the full URL, for
+      # example https://s3.example.com.
+      endpointUrl: ""
+      region: ""
+      # path, virtual or empty for the boto3 default. S3-compatible stores
+      # often need path.
+      addressingStyle: ""
+      signatureVersion: s3v4
+      # Secret in the release namespace with the access key and secret key.
+      # Leave empty when the pods get credentials another way, for example
+      # from workload identity.
+      existingSecret: ""
+      accessKeySecretKey: AWS_ACCESS_KEY_ID
+      secretKeySecretKey: AWS_SECRET_ACCESS_KEY
+      # Secret with the CA bundle that signed the endpoint certificate. Empty
+      # uses the CA bundle of the Pulp image.
+      caSecret:
+        name: ""
+        key: ca.crt
+      # Set false to skip TLS verification of the endpoint. Only for tests.
+      verify: true
+      # The content app serves every file itself, so the bucket stays
+      # private and every download passes Pulp's entitlement check. Set
+      # true to answer with a redirect to a signed bucket URL instead:
+      # clients must then reach and trust the endpoint, and anyone with
+      # the URL can download the file until the signature expires.
+      redirectToObjectStorage: false
+      # More django-storages S3 options, for example {"location": "pulp"}.
+      # Not for credentials (access_key, secret_key, security_token,
+      # session_token, session_profile): they would land in a ConfigMap, so
+      # the chart rejects them. Use existingSecret.
+      options: {}
+    # The settings below apply to type filesystem only.
+    # With existingClaim set, the chart creates no claim.
     existingClaim: ""
     size: 10Gi
     # Empty uses the cluster default StorageClass.

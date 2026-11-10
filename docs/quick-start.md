@@ -41,8 +41,10 @@ front door, Dynflow, Pulp, Candlepin, Katello and the Smart Proxy enabled.
 Helm waits for the migration Jobs, the ready Deployments and the Jobs that
 register Pulp and the Smart Proxy in Foreman.
 Then [pytest-helm-charts](https://github.com/giantswarm/pytest-helm-charts) connects
-to that cluster and runs the 55 tests in `tests/integration` that are not
-marked `backup` (see [Back up and restore](#back-up-and-restore)). For Foreman:
+to that cluster and runs the 61 tests in `tests/integration` that are not
+marked `backup` (see [Back up and restore](#back-up-and-restore)); the 6 tests
+for [Pulp content in S3](#store-pulp-content-in-s3) are skipped unless
+`PULP_STORAGE=s3`. For Foreman:
 the web Deployment is available, the API reports an active database, the seeded
 administrator can query the users API, the web pod has the CA bundle from its
 Secret, and the `foreman` user in the web pod can read the client key and verify
@@ -208,7 +210,8 @@ the key, set `REX_TARGET_IP` (and optionally `REX_TARGET_PORT`,
 Pulp is off by default. With `pulp.enabled=true` the chart adds a migration Job
 that runs before every install and upgrade, Deployments for the Pulp API
 (Service port 24817), the content app (24816) and the tasking worker, and a
-PersistentVolumeClaim mounted at `/var/lib/pulp` by all of them.
+PersistentVolumeClaim mounted at `/var/lib/pulp` by all of them. Content can
+also live in S3 instead, see [Store Pulp content in S3](#store-pulp-content-in-s3).
 
 Pulp needs a PostgreSQL database, Valkey or Redis, and a Secret, default
 `pulp-runtime`, with these keys:
@@ -230,6 +233,10 @@ The content volume is ReadWriteOnce by default, so the content and worker pods
 are scheduled on the node of a Pulp API pod. All Pulp pods therefore run on one
 node; set `pulp.storage.colocate=false` only with ReadWriteMany storage.
 
+`pulp.extraInitContainers`, `pulp.extraVolumes`, `pulp.extraVolumeMounts` and
+`pulp.extraEnv` are added to the API, content and worker pods and to the
+migration Job.
+
 The Pulp API trusts the user name in the `REMOTE-USER` request header and
 accepts no passwords. It is meant to sit behind the
 [HTTPS front door](#https-front-door), which sets this header from a verified
@@ -238,6 +245,69 @@ client certificate. A NetworkPolicy lets only pods labelled
 Anyone who can create pods in the namespace can give a pod these labels. On
 clusters whose network plugin ignores NetworkPolicy, any pod that reaches
 the API Service can act as any Pulp user.
+
+### Store Pulp content in S3
+
+With `pulp.storage.type=s3` Pulp keeps artifacts and published files in a
+bucket in Amazon S3 or an S3-compatible object store, using the
+`storages.backends.s3.S3Storage` backend as in the
+[Pulp storage documentation](https://pulpproject.org/pulpcore/docs/admin/guides/configure-pulp/configure-storages/).
+The chart then creates no PersistentVolumeClaim and drops the node affinity, so
+the Pulp pods can run on any node. Each Pulp pod gets an emptyDir at
+`/var/lib/pulp` for temporary files, for example packages a sync downloads
+before Pulp uploads them.
+
+```yaml
+pulp:
+  storage:
+    type: s3
+    s3:
+      bucket: pulp
+      endpointUrl: https://s3.example.com
+      region: us-east-1
+      addressingStyle: path
+      existingSecret: pulp-s3
+```
+
+`existingSecret` names a Secret with the keys `AWS_ACCESS_KEY_ID` and
+`AWS_SECRET_ACCESS_KEY` (`accessKeySecretKey` and `secretKeySecretKey` change
+the key names). The pods receive them as environment variables, and the
+settings file contains no credentials. Leave it empty when the pods get
+credentials another way, for example from workload identity. For an endpoint
+certificate from a private CA, put the CA bundle in a Secret and set
+`pulp.storage.s3.caSecret.name`. `pulp.storage.s3.options` passes further
+[django-storages S3 options](https://django-storages.readthedocs.io/en/latest/backends/amazon-S3.html),
+for example `location` for a key prefix.
+
+By default Pulp's content app serves files from the bucket itself, through
+httpd like filesystem content, so the object store needs no client access.
+With `pulp.storage.s3.redirectToObjectStorage=true` Pulp answers with a
+redirect to a signed URL of the object; hosts then download from the object
+store directly and must reach and trust its endpoint.
+
+The chart does not copy content between storage types. `tools/backup.sh` does
+not back up the bucket; use the object store's own versioning or replication.
+
+The published Pulp image does not contain `django-storages` and `boto3` yet
+([pulp-oci-images#117](https://github.com/theforeman/pulp-oci-images/pull/117)),
+so with the image as it is Pulp fails on the first storage access with `No
+module named 'storages'`. Until a Pulp image with these packages is released,
+the tests use a temporary workaround in
+`tests/kind/values-pulp-s3-workaround.yaml`: an init container that installs
+the packages, pinned by hash, from PyPI into an emptyDir, and `PYTHONPATH`
+pointing at it. It is a test fixture that needs access to PyPI from the pods,
+not a supported configuration, and it is removed when the image ships the
+packages.
+
+`make test PULP_STORAGE=s3` installs a disposable MinIO with a bucket `pulp`
+in the test namespace and installs the chart with
+`tests/kind/values-pulp-s3.yaml` and the workaround. It runs the whole
+integration suite, and in addition checks that the Pulp pods have no claim and
+no node affinity, that Django's default storage is the S3 backend and can
+write, read and delete an object, that a synced repository's artifacts appear
+in the bucket, that the status API reports the stored size, and that the
+content app serves a package with the right checksum. `make test-backup` is
+not supported in this mode, because it deletes the namespace that holds MinIO.
 
 ## Enable Candlepin
 
@@ -335,8 +405,8 @@ restarted container stops the daemon from starting.
 authentication, Foreman Tasks, the event daemon, the Pulp API and the Pulp
 content app as `ok`, and that Pulp is registered as a Smart Proxy. It then
 creates an organization with a product and a yum repository, syncs it,
-checks that the repository metadata is served only with an entitlement
-certificate, publishes a content view, creates an activation key, registers a
+checks that the repository metadata and a package are served only with an
+entitlement certificate, publishes a content view, creates an activation key, registers a
 consumer with it, and deletes the organization. A self-signed certificate for
 that consumer, sent as an `X-RHSM-SSL-CLIENT-CERT` header in any `-`/`_`
 spelling by a client without a valid client certificate, must not
@@ -442,7 +512,7 @@ A backup is a directory `foreman-backup-<UTC time>` with:
 | File | Contents | Needed to restore |
 | --- | --- | --- |
 | `foreman.dump`, `candlepin.dump`, `pulp.dump` | `pg_dump` custom format dumps of the three databases | Yes |
-| `pulp-content.tar.gz` | The `media` directory of the Pulp volume: artifacts and published files | Yes, unless content is synced again |
+| `pulp-content.tar.gz` | The `media` directory of the Pulp volume: artifacts and published files. Not created with S3 storage | Yes, unless content is synced again |
 | `secrets/*.json` | Every Secret the release's workloads read | See below |
 | `values.yaml` | The user-supplied chart values | Yes |
 | `metadata.json` | Namespace, release, chart version, image digests, file list | Yes |

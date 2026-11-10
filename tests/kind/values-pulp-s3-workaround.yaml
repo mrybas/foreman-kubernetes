@@ -1,0 +1,61 @@
+# TEMPORARY WORKAROUND, test fixture only. Delete this file once the published
+# quay.io/foreman/pulp image ships django-storages and boto3:
+# https://github.com/theforeman/pulp-oci-images/pull/117
+#
+# The image has no S3 storage backend and no pip. An init container from the
+# official python:3.12-slim image (CPython 3.12, like the Pulp image) installs
+# the missing pure-Python wheels, pinned by hash, into an emptyDir, and
+# PYTHONPATH puts that directory in front of the image's packages. The versions
+# follow pulpcore 3.118's s3 extra (django-storages[boto3]==1.14.6).
+# --no-deps: urllib3, python-dateutil and six come from the image unchanged.
+# Pods need egress to pypi.org and files.pythonhosted.org.
+pulp:
+  extraInitContainers:
+    - name: install-s3-storage
+      image: docker.io/library/python@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+      command:
+        - /bin/sh
+        - -ec
+        - |
+          cat >/tmp/requirements.txt <<'EOF'
+          boto3==1.43.127 --hash=sha256:47f87f89b10e62f5191bd98674beb0dd52ed368c19fcdfef2ef38ead31126f49
+          botocore==1.43.127 --hash=sha256:aa0e3188679a2164a2098a14ea9b59520520cb573aaee9999d852480691e134a
+          django-storages==1.14.6 --hash=sha256:11b7b6200e1cb5ffcd9962bd3673a39c7d6a6109e8096f0e03d46fab3d3aabd9
+          jmespath==1.1.0 --hash=sha256:a5663118de4908c91729bea0acadca56526eb2698e83de10cd116ae0f4e97c64
+          s3transfer==0.19.3 --hash=sha256:24eb7535804306355e31c952a90022bf5b2f9d760f9a11062c7493a217c08553
+          EOF
+          pip install --quiet --no-cache-dir --disable-pip-version-check \
+            --no-deps --only-binary=:all: --require-hashes --no-compile \
+            --target /opt/pulp-s3 --requirement /tmp/requirements.txt
+      env:
+        - name: HOME
+          value: /tmp
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        runAsNonRoot: true
+        runAsUser: 700
+        runAsGroup: 700
+        seccompProfile:
+          type: RuntimeDefault
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          memory: 512Mi
+      volumeMounts:
+        - name: pulp-s3
+          mountPath: /opt/pulp-s3
+  extraVolumes:
+    - name: pulp-s3
+      emptyDir: {}
+  extraVolumeMounts:
+    - name: pulp-s3
+      mountPath: /opt/pulp-s3
+      readOnly: true
+  extraEnv:
+    - name: PYTHONPATH
+      value: /opt/pulp-s3

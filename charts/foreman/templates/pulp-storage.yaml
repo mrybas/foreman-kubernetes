@@ -1,4 +1,4 @@
-{{- if and .Values.pulp.enabled (not .Values.pulp.storage.existingClaim) }}
+{{- if and .Values.pulp.enabled (eq (include "pulp.storageType" .) "filesystem") (not .Values.pulp.storage.existingClaim) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

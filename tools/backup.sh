@@ -5,8 +5,8 @@
 #
 # Creates DESTINATION/foreman-backup-<UTC timestamp>/ with the foreman,
 # candlepin and pulp database dumps (pg_dump custom format), the Pulp content
-# (media directory of the Pulp volume), the Secrets the release reads, the
-# user-supplied chart values and metadata.json.
+# (media directory of the Pulp volume, not with pulp.storage.type s3), the
+# Secrets the release reads, the user-supplied chart values and metadata.json.
 #
 # Options:
 #   -n, --namespace NAME  release namespace (default foreman)
@@ -58,7 +58,10 @@ databases=(foreman)
 [[ "${candlepin_enabled}" != true ]] || databases+=(candlepin)
 [[ "${pulp_enabled}" != true ]] || databases+=(pulp)
 claim=
-if [[ "${pulp_enabled}" == true ]]; then
+pulp_storage=$(jq -r '.pulp.storage.type // "filesystem"' <<<"${values}")
+if [[ "${pulp_enabled}" == true && "${pulp_storage}" == s3 ]]; then
+  log "Pulp content is in object storage and is not part of this backup"
+elif [[ "${pulp_enabled}" == true ]]; then
   claim=$(jq -r '.pulp.storage.existingClaim // ""' <<<"${values}")
   if [[ -z "${claim}" ]]; then
     claim=$(hm get manifest "${release}" |

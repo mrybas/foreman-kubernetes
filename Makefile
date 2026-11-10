@@ -2,8 +2,10 @@ TEST_PYTHON ?= .venv/bin/python
 KIND_CLUSTER_NAME ?= foreman-minimal
 KIND_NAMESPACE ?= foreman
 HELM_RELEASE ?= foreman
+# filesystem or s3 (Pulp content in a MinIO bucket in the test namespace).
+PULP_STORAGE ?= filesystem
 KUBECONFIG := $(CURDIR)/artifacts/kubeconfig
-export KIND_CLUSTER_NAME KIND_NAMESPACE HELM_RELEASE KUBECONFIG
+export KIND_CLUSTER_NAME KIND_NAMESPACE HELM_RELEASE KUBECONFIG PULP_STORAGE
 export KIND_EXPERIMENTAL_PROVIDER ?= podman
 # Foreman images for test-upgrade. It installs UPGRADE_FROM_IMAGE_DIGEST, the
 # 5.0.1 release, and upgrades to the image that UPGRADE_TO_IMAGE_TAG points to

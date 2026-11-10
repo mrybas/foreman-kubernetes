@@ -77,7 +77,15 @@ def test_deployment_is_available(kube_cluster, namespace, prefix, component):
     assert deployment["status"]["observedGeneration"] == deployment["metadata"]["generation"]
 
 
-def test_pods_share_one_node(kube_cluster, namespace):
+def object_storage(kube_cluster, namespace, prefix):
+    """True when the release keeps Pulp content in S3 (pulp.storage.type s3)."""
+    config = kube_cluster.kubectl(f"get configmap {prefix}-config", namespace=namespace)
+    return "storages.backends.s3.S3Storage" in config["data"]["settings.py"]
+
+
+def test_pods_share_one_node(kube_cluster, namespace, prefix):
+    if object_storage(kube_cluster, namespace, prefix):
+        pytest.skip("with S3 storage the Pulp pods are not tied to one node")
     components = {f"pulp-{component}" for component in COMPONENTS}
     # pytest-helm-charts returns the items of a List.
     pods = kube_cluster.kubectl("get pods", namespace=namespace)
