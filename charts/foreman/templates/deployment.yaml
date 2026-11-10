@@ -9,10 +9,12 @@ spec:
   selector:
     matchLabels:
       {{- include "foreman.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: web
   template:
     metadata:
       labels:
         {{- include "foreman.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: web
     spec:
       securityContext:
         fsGroup: 994

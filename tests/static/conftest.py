@@ -18,8 +18,8 @@ class Manifests(dict):
         return [doc for (kind, _), doc in self.items() if kind in kinds]
 
 
-def render_chart(values_file=None):
-    command = ["helm", "template", RELEASE, str(CHART), "--namespace", NAMESPACE]
+def render_chart(values_file=None, release=RELEASE):
+    command = ["helm", "template", release, str(CHART), "--namespace", NAMESPACE]
     if values_file:
         command += ["--values", str(values_file)]
     result = subprocess.run(command, capture_output=True, text=True, check=False)
@@ -43,9 +43,9 @@ def manifests():
 def render(tmp_path):
     """Render the chart with a dict of values overrides."""
 
-    def _render(values):
+    def _render(values, release=RELEASE):
         values_file = tmp_path / "values.yaml"
         values_file.write_text(yaml.safe_dump(values))
-        return render_chart(values_file)
+        return render_chart(values_file, release)
 
     return _render

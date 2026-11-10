@@ -1,0 +1,123 @@
+{{- if .Values.dynflow.enabled }}
+{{- /*
+Three Sidekiq processes run Dynflow, with the command foremanctl uses. The
+image ships /etc/foreman/dynflow/orchestrator.yml and worker.yml as ERB
+templates that read FOREMAN_DYNFLOW_QUEUES and FOREMAN_DYNFLOW_CONCURRENCY.
+*/}}
+{{- $root := . }}
+{{- $d := .Values.dynflow }}
+{{- $processes := list
+  (dict "name" "orchestrator" "config" "orchestrator" "replicas" 1 "concurrency" 1 "queues" (list) "resources" $d.orchestrator.resources)
+  (dict "name" "worker" "config" "worker" "replicas" $d.worker.replicas "concurrency" $d.worker.concurrency "queues" $d.worker.queues "resources" $d.worker.resources)
+  (dict "name" "worker-hosts-queue" "config" "worker" "replicas" $d.hostsQueue.replicas "concurrency" $d.hostsQueue.concurrency "queues" (list "hosts_queue") "resources" $d.hostsQueue.resources)
+}}
+{{- $probe := list "grep" "-qF" "busy]" "/proc/1/cmdline" | toJson }}
+{{- range $processes }}
+{{- $component := printf "dynflow-%s" .name }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "foreman.componentName" (list $root $component) }}
+  labels:
+    {{- include "foreman.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  replicas: {{ .replicas }}
+  {{- if eq .name "orchestrator" }}
+  # A new orchestrator waits for the Redis lock held by the old one and never
+  # becomes ready, so a rolling update would never finish.
+  strategy:
+    type: Recreate
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "foreman.selectorLabels" $root | nindent 6 }}
+      app.kubernetes.io/component: {{ $component }}
+  template:
+    metadata:
+      labels:
+        {{- include "foreman.selectorLabels" $root | nindent 8 }}
+        app.kubernetes.io/component: {{ $component }}
+    spec:
+      # Sidekiq waits up to 25 seconds for running jobs after SIGTERM.
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        fsGroup: 994
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 994
+        runAsNonRoot: true
+        runAsUser: 994
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with $root.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: dynflow
+          image: {{ include "foreman.image" $root }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          workingDir: /usr/share/foreman
+          command:
+            - sidekiq
+            - -e
+            - production
+            - -r
+            - ./extras/dynflow-sidekiq.rb
+            - -C
+            - /etc/foreman/dynflow/{{ .config }}.yml
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            runAsGroup: 994
+            runAsUser: 994
+          env:
+            {{- include "foreman.env" (merge (dict "databasePool" (add .concurrency 5)) $root) | nindent 12 }}
+            - name: DYNFLOW_REDIS_URL
+              value: $(FOREMAN_REDIS_URL)/6
+            - name: REDIS_PROVIDER
+              value: DYNFLOW_REDIS_URL
+            {{- if .queues }}
+            - name: FOREMAN_DYNFLOW_QUEUES
+              value: {{ join "," .queues | quote }}
+            {{- end }}
+            - name: FOREMAN_DYNFLOW_CONCURRENCY
+              value: {{ .concurrency | quote }}
+          volumeMounts:
+            {{- include "foreman.volumeMounts" $root | nindent 12 }}
+          # Sidekiq sets its process title to "sidekiq <version> [N of M busy]"
+          # once Dynflow is initialized. A passive orchestrator waiting for the
+          # lock has no such title. The image has no ps or pgrep. The probes
+          # are the same, so liveness restarts a Sidekiq that exited, not one
+          # that hangs.
+          startupProbe:
+            exec:
+              command: {{ $probe }}
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: {{ $probe }}
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: {{ $probe }}
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            {{- toYaml .resources | nindent 12 }}
+      volumes:
+        - name: configuration
+          configMap:
+            name: {{ include "foreman.configName" $root }}
+        - name: temporary
+          emptyDir: {}
+        {{- if $root.Values.certificates.enabled }}
+        {{- include "foreman.certificatesVolume" $root | nindent 8 }}
+        {{- end }}
+{{- end }}
+{{- end }}

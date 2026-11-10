@@ -45,10 +45,16 @@ case "${1:-}" in
     # Test CA and Foreman client certificate (CN is the FQDN).
     KUBE_CONTEXT="${context}" "${repo_root}/tests/kind/certificates.sh" \
       "${namespace}" "${release}" foreman.test
+    # Dynflow: Valkey fixture and its URL in the runtime Secret.
+    kubectl --context "${context}" --namespace "${namespace}" apply \
+      --filename "${repo_root}/tests/kind/dependencies-dynflow.yaml"
+    kubectl --context "${context}" --namespace "${namespace}" rollout status deployment/valkey --timeout=180s
+    kubectl --context "${context}" --namespace "${namespace}" patch secret foreman-runtime \
+      --type merge --patch '{"stringData":{"REDIS_URL":"redis://valkey:6379"}}'
     helm upgrade --install "${release}" "${repo_root}/charts/foreman" \
       --kube-context "${context}" --namespace "${namespace}" \
       --set-string foreman.fqdn=foreman.test --set-string foreman.externalUrl=http://foreman.test \
-      --set certificates.enabled=true \
+      --set certificates.enabled=true --set dynflow.enabled=true \
       --wait --wait-for-jobs --timeout 20m
     ;;
   diagnostics)

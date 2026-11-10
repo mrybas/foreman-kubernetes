@@ -1,8 +1,9 @@
 # Minimal Foreman quick start
 
 This experimental, unsupported milestone installs a single core Foreman web pod
-backed by PostgreSQL. It does not enable Katello, Foreman Tasks, Candlepin, Pulp,
-Smart Proxy features, high availability, or production ingress.
+backed by PostgreSQL, optionally with Dynflow and the Foreman Tasks plugin for
+background tasks. It does not enable Katello, Candlepin, Pulp, Smart Proxy
+features, high availability, or production ingress.
 
 ## Dependencies
 
@@ -33,15 +34,16 @@ existing cluster with the same name. Override `KIND_CLUSTER_NAME` consistently
 across commands if that name is already in use. To use Docker explicitly, set
 `KIND_EXPERIMENTAL_PROVIDER=docker` on each cluster command.
 
-`test` installs disposable PostgreSQL, creates test credentials and test
-certificates, and installs the chart. Helm waits for the migration and seed Job
-and the ready Foreman Deployment.
+`test` installs disposable PostgreSQL and Valkey, creates test credentials and
+test certificates, and installs the chart with Dynflow enabled. Helm waits for
+the migration and seed Job and the ready Foreman and Dynflow Deployments.
 Then [pytest-helm-charts](https://github.com/giantswarm/pytest-helm-charts) connects
 to that cluster and runs five tests: the web Deployment is available, the API
 reports an active database, the seeded administrator can query the users API,
 the web pod has the CA bundle from its Secret, and the `foreman` user in the
 web pod can read the client key and verify the client certificate against the
-CA bundle.
+CA bundle. The Dynflow tests are described in
+[Run background tasks](#run-background-tasks).
 Pytest prints the test count and writes `artifacts/junit.xml` for CI reporting.
 The optional in-cluster smoke test can also be run with `helm test`.
 
@@ -81,6 +83,36 @@ tests/kind/certificates.sh foreman foreman foreman.example.test
 
 The script keeps the generated keys under `artifacts/certificates/` and reuses
 them on the next run. Use it only for tests.
+
+## Run background tasks
+
+Foreman runs background tasks with Dynflow in Sidekiq processes. Set
+`dynflow.enabled=true` to add three Deployments that use the Foreman image:
+
+| Deployment | Queues | Replicas |
+| --- | --- | --- |
+| `<release>-foreman-dynflow-orchestrator` | `dynflow_orchestrator` | always 1 |
+| `<release>-foreman-dynflow-worker` | `dynflow.worker.queues` | `dynflow.worker.replicas` |
+| `<release>-foreman-dynflow-worker-hosts-queue` | `hosts_queue` | `dynflow.hostsQueue.replicas` |
+
+The orchestrator assigns tasks to the workers, and only one can be active at a
+time, so it always has one replica and is replaced, not rolled, on upgrade.
+Enabling Dynflow also enables the Foreman Tasks plugin (`foreman-tasks`) in
+every Foreman pod.
+
+Dynflow needs Valkey or Redis. Add its URL without a database number, for
+example `redis://valkey:6379`, to the runtime Secret under the key `REDIS_URL`
+(`foreman.redisUrlSecretKey`). Dynflow uses database 6. Every Foreman pod then
+also keeps the Rails cache in database 4. The chart does not install Valkey.
+
+On a fresh database the three processes start at the same time and one of
+them can fail once with `PG::TRSerializationFailure` while scheduling the first
+recurring tasks. Kubernetes restarts it and it then runs normally.
+
+`make test` checks that the three Deployments are available, that the
+`foreman-tasks` plugin is loaded, that the API ping reports the Valkey cache as
+`ok`, and that a scheduled report runs as a task that ends in state `stopped`
+with result `success`.
 
 ## Access and cleanup
 

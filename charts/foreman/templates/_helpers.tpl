@@ -10,6 +10,18 @@
 {{- end }}
 {{- end }}
 
+{{/*
+Name of a component resource: <fullname>-<component>, with the fullname
+shortened so that the result fits in 63 characters and names of different
+components stay distinct. Takes (list $context "component").
+*/}}
+{{- define "foreman.componentName" -}}
+{{- $context := index . 0 }}
+{{- $component := index . 1 }}
+{{- $fullname := include "foreman.fullname" $context | trunc (int (sub 62 (len $component))) | trimSuffix "-" }}
+{{- printf "%s-%s" $fullname $component }}
+{{- end }}
+
 {{- define "foreman.labels" -}}
 helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
 app.kubernetes.io/name: {{ include "foreman.name" . }}
@@ -109,7 +121,7 @@ Files: ca.crt, client.crt, client.key.
 - name: RAILS_SERVE_STATIC_FILES
   value: "true"
 - name: FOREMAN_ENABLED_PLUGINS
-  value: ""
+  value: {{ include "foreman.enabledPlugins" . | quote }}
 - name: FOREMAN_PUMA_WORKERS
   value: {{ .Values.foreman.puma.workers | quote }}
 - name: FOREMAN_PUMA_THREADS_MIN
@@ -117,7 +129,7 @@ Files: ca.crt, client.crt, client.key.
 - name: FOREMAN_PUMA_THREADS_MAX
   value: {{ .Values.foreman.puma.threadsMax | quote }}
 - name: FOREMAN_DATABASE_POOL
-  value: {{ .Values.foreman.puma.threadsMax | quote }}
+  value: {{ .databasePool | default .Values.foreman.puma.threadsMax | quote }}
 - name: DATABASE_URL
   valueFrom:
     secretKeyRef:
@@ -135,6 +147,42 @@ Files: ca.crt, client.crt, client.key.
     secretKeyRef:
       name: {{ .Values.foreman.existingSecret }}
       key: {{ .Values.foreman.secretKeyBaseSecretKey }}
+{{- if .Values.dynflow.enabled }}
+{{ include "dynflow.cacheEnv" . }}
+{{- end }}
+{{- end }}
+
+{{/*
+Space separated plugin list for FOREMAN_ENABLED_PLUGINS. The image loads a
+plugin only when its name is in this list.
+*/}}
+{{- define "foreman.enabledPlugins" -}}
+{{- $plugins := list -}}
+{{- if .Values.dynflow.enabled }}
+{{- $plugins = append $plugins "foreman-tasks" -}}
+{{- end }}
+{{- join " " $plugins -}}
+{{- end }}
+
+
+{{/*
+Valkey URL from the existing Secret and the Rails cache settings that use it.
+Every Foreman pod shares the cache, so Dynflow and web see the same values.
+*/}}
+{{- define "dynflow.cacheEnv" -}}
+- name: FOREMAN_REDIS_URL
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.foreman.existingSecret }}
+      key: {{ .Values.foreman.redisUrlSecretKey }}
+- name: FOREMAN_RAILS_CACHE_STORE_TYPE
+  value: redis
+- name: FOREMAN_RAILS_CACHE_STORE_URLS
+  value: $(FOREMAN_REDIS_URL)/4
+- name: FOREMAN_RAILS_CACHE_STORE_OPTIONS_COMPRESS
+  value: "true"
+- name: FOREMAN_RAILS_CACHE_STORE_OPTIONS_NAMESPACE
+  value: foreman
 {{- end }}
 
 {{- define "foreman.volumeMounts" -}}

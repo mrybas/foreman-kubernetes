@@ -18,6 +18,11 @@ foreman:
   secretKeyBaseSecretKey: SECRET_KEY_BASE
   seedAdminUserSecretKey: SEED_ADMIN_USER
   seedAdminPasswordSecretKey: SEED_ADMIN_PASSWORD
+  # Key in existingSecret with the Valkey or Redis URL, without a database
+  # number, for example redis://valkey:6379. Read only when dynflow.enabled is
+  # true. Dynflow uses database 6 and the Rails cache of every Foreman pod
+  # uses database 4.
+  redisUrlSecretKey: REDIS_URL
   database:
     sslMode: disable
   puma:
@@ -46,6 +51,44 @@ certificates:
     # presents as a TLS client. Default <release>-client-tls. Its CN should be
     # the Foreman FQDN.
     secretName: ""
+
+# Dynflow runs Foreman background tasks in Sidekiq processes that use the
+# same image as the web pod. Enabling it also enables the foreman-tasks plugin
+# in all Foreman pods and requires Valkey or Redis (foreman.redisUrlSecretKey).
+dynflow:
+  enabled: false
+  # The orchestrator always runs one replica: only one orchestrator can be
+  # active at a time.
+  orchestrator:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 512Mi
+      limits:
+        memory: 1Gi
+  # Runs tasks from the given queues.
+  worker:
+    replicas: 1
+    concurrency: 10
+    queues:
+      - default
+      - remote_execution
+    resources:
+      requests:
+        cpu: 50m
+        memory: 512Mi
+      limits:
+        memory: 1Gi
+  # Runs tasks from hosts_queue.
+  hostsQueue:
+    replicas: 1
+    concurrency: 5
+    resources:
+      requests:
+        cpu: 50m
+        memory: 512Mi
+      limits:
+        memory: 1Gi
 
 migration:
   backoffLimit: 2
