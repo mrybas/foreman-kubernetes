@@ -1,0 +1,110 @@
+{{- if .Values.candlepin.enabled }}
+{{- $certs := include "candlepin.certificatesPath" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "candlepin.fullname" . }}-config
+  labels:
+    {{- include "candlepin.labels" . | nindent 4 }}
+data:
+  # Ported from foremanctl src/roles/candlepin/templates. Credentials are
+  # ${NAME} references that Candlepin resolves from the container environment,
+  # which reads them from the existing Secret.
+  candlepin.conf: |
+    candlepin.consumer_system_name_pattern=.+
+
+    candlepin.environment_content_filtering=true
+    candlepin.auth.basic.enable=false
+    candlepin.auth.trusted.enable=false
+
+    # The pre-install and pre-upgrade migration Job applies the schema.
+    # Candlepin refuses to start while changesets are pending.
+    candlepin.db.database_manage_on_startup=Halt
+
+    candlepin.auth.oauth.enable=true
+    candlepin.auth.oauth.consumer.katello.secret=${KATELLO_OAUTH_SECRET}
+
+    module.config.adapter_module=org.candlepin.katello.KatelloModule
+
+    candlepin.ca_key={{ $certs }}/ca.key
+    candlepin.ca_cert={{ $certs }}/ca.crt
+
+    candlepin.async.jobs.ExpiredPoolsCleanupJob.schedule=0 0 0 * * ?
+
+    jpa.config.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
+    jpa.config.hibernate.hbm2ddl.auto=validate
+    jpa.config.hibernate.connection.username=${JDBC_USERNAME}
+    jpa.config.hibernate.connection.password=${JDBC_PASSWORD}
+    jpa.config.hibernate.connection.driver_class=org.postgresql.Driver
+    jpa.config.hibernate.connection.url=${JDBC_URL}
+
+    org.quartz.jobStore.misfireThreshold=60000
+    org.quartz.jobStore.useProperties=false
+    org.quartz.jobStore.dataSource=myDS
+    org.quartz.jobStore.tablePrefix=QRTZ_
+    org.quartz.jobStore.class=org.quartz.impl.jdbcjobstore.JobStoreTX
+    org.quartz.jobStore.driverDelegateClass=org.quartz.impl.jdbcjobstore.PostgreSQLDelegate
+
+    org.quartz.dataSource.myDS.driver=org.postgresql.Driver
+    org.quartz.dataSource.myDS.user=${JDBC_USERNAME}
+    org.quartz.dataSource.myDS.password=${JDBC_PASSWORD}
+    org.quartz.dataSource.myDS.maxConnections=5
+    org.quartz.dataSource.myDS.URL=${JDBC_URL}
+  server.xml: |
+    <Server port="8005" shutdown="SHUTDOWN">
+      <Listener className="org.apache.catalina.core.OpenSSLLifecycleListener" />
+      <Listener className="org.apache.catalina.core.JreMemoryLeakPreventionListener" />
+      <Listener className="org.apache.catalina.mbeans.GlobalResourcesLifecycleListener" />
+      <Listener className="org.apache.catalina.core.ThreadLocalLeakPreventionListener" />
+
+      <GlobalNamingResources>
+        <Resource name="UserDatabase" auth="Container"
+                  type="org.apache.catalina.UserDatabase"
+                  description="User database that can be updated and saved"
+                  factory="org.apache.catalina.users.MemoryUserDatabaseFactory"
+                  pathname="conf/tomcat-users.xml" />
+      </GlobalNamingResources>
+
+      <Service name="Catalina">
+        <Connector port="23443"
+                   address="0.0.0.0"
+                   protocol="org.apache.coyote.http11.Http11NioProtocol"
+                   SSLEnabled="true"
+                   maxThreads="150" scheme="https" secure="true">
+          <SSLHostConfig certificateVerification="optional"
+                         protocols="TLSv1.2,TLSv1.3"
+                         caCertificateFile="{{ $certs }}/ca.crt"
+                         ciphers="PROFILE=SYSTEM">
+            <Certificate certificateFile="{{ $certs }}/tls.crt"
+                         certificateKeyFile="{{ $certs }}/tls.key" />
+          </SSLHostConfig>
+        </Connector>
+
+        <Engine name="Catalina" defaultHost="localhost">
+          <Realm className="org.apache.catalina.realm.UserDatabaseRealm"
+                 resourceName="UserDatabase"/>
+          <Host name="localhost" appBase="webapps"
+                unpackWARs="true" autoDeploy="true">
+            <Valve className="org.apache.catalina.valves.AccessLogValve"
+                   directory="/proc/self/fd"
+                   prefix="1"
+                   suffix=""
+                   rotatable="false"
+                   pattern="%h %l %u %t &quot;%r&quot; %s %b" />
+          </Host>
+        </Engine>
+      </Service>
+    </Server>
+  tomcat.conf: |
+    TOMCAT_CFG_LOADED="1"
+    TOMCATS_BASE="/var/lib/tomcats/"
+    JAVA_HOME="/usr/lib/jvm/jre-25"
+    CATALINA_HOME="/usr/share/tomcat"
+    CATALINA_TMPDIR="/var/cache/tomcat/temp"
+    JAVA_OPTS={{ printf "%s -Dcom.redhat.fips=false --enable-native-access=ALL-UNNAMED" .Values.candlepin.javaOpts | quote }}
+    SECURITY_MANAGER="0"
+  logging.properties: |
+    {{- .Files.Get "files/candlepin/logging.properties" | nindent 4 }}
+  logback.xml: |
+    {{- .Files.Get "files/candlepin/logback.xml" | nindent 4 }}
+{{- end }}

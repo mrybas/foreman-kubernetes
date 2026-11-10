@@ -2,7 +2,7 @@
 
 This experimental, unsupported milestone installs a single core Foreman web pod
 backed by PostgreSQL. Optionally it adds Dynflow with the Foreman Tasks plugin
-for background tasks, and Pulp. It does not enable Katello, Candlepin, Smart
+for background tasks, Pulp, and Candlepin. It does not enable Katello, Smart
 Proxy features, high availability, or production ingress.
 
 ## Dependencies
@@ -35,8 +35,8 @@ across commands if that name is already in use. To use Docker explicitly, set
 `KIND_EXPERIMENTAL_PROVIDER=docker` on each cluster command.
 
 `test` installs disposable PostgreSQL and Valkey, creates test credentials and
-test certificates, and installs the chart with Dynflow and Pulp enabled. Helm
-waits for the migration Jobs and the ready Deployments.
+test certificates, and installs the chart with Dynflow, Pulp and Candlepin
+enabled. Helm waits for the migration Jobs and the ready Deployments.
 Then [pytest-helm-charts](https://github.com/giantswarm/pytest-helm-charts) connects
 to that cluster and runs the tests in `tests/integration`. For Foreman: the web
 Deployment is available, the API reports an active database, the seeded
@@ -47,7 +47,10 @@ the client certificate against the CA bundle. The Dynflow tests are described in
 worker Deployments are available on one node, the status API reports online
 api, content and worker processes with database and Valkey connected, the API
 answers only with a known `REMOTE-USER`, only pods allowed by the NetworkPolicy
-reach the API, and the content app answers.
+reach the API, and the content app answers. For Candlepin: its Deployment is
+available, `/candlepin/status` reports mode `NORMAL` over HTTPS verified against
+the CA bundle for each name in the server certificate, another name is
+rejected, and the log contains no credentials.
 Pytest prints the test count and writes `artifacts/junit.xml` for CI reporting.
 The optional in-cluster smoke test can also be run with `helm test`.
 
@@ -153,6 +156,38 @@ front door yet. A NetworkPolicy lets only pods labelled
 Anyone who can create pods in the namespace can give a pod these labels. On
 clusters whose network plugin ignores NetworkPolicy, any pod that reaches
 the API Service can act as any Pulp user.
+
+## Enable Candlepin
+
+Candlepin manages subscriptions and content access for Katello. Set
+`candlepin.enabled=true` to run it as a Deployment with a Service named
+`<fullname>-candlepin` on HTTPS port 23443, where `<fullname>` is
+`fullnameOverride` or `<release>-foreman`. Candlepin is limited to a single
+replica because of its embedded messaging broker.
+
+Candlepin needs its own PostgreSQL database and these Secrets (default names
+for a release called `foreman`):
+
+| Secret | Type and keys | Contents |
+| --- | --- | --- |
+| `candlepin-runtime` | `DATABASE_URL`, `DATABASE_USERNAME`, `DATABASE_PASSWORD`, `OAUTH_SECRET` | JDBC URL such as `jdbc:postgresql://postgresql:5432/candlepin?sslmode=disable`, database credentials, and the OAuth secret Katello will use |
+| `foreman-candlepin-ca` | `kubernetes.io/tls`: `tls.crt`, `tls.key` | CA certificate and private key Candlepin uses to sign consumer certificates |
+| `foreman-candlepin-tls` | `kubernetes.io/tls`: `tls.crt`, `tls.key` | Tomcat HTTPS server certificate. Its SANs must include `foreman-foreman-candlepin` and `localhost`, and `foreman-ca` must contain its issuer |
+
+The `candlepin` and `certificates.candlepin` sections of
+`charts/foreman/values.yaml` change these names, the image, the Java heap and
+the resources. A pre-install and pre-upgrade Job applies the database schema
+with Liquibase before Foreman's migration. Candlepin then refuses to start if
+the schema is not current. `tests/kind/certificates.sh` also creates the two
+Candlepin certificate Secrets, signed by the test CA.
+
+Check Candlepin from your workstation through a port forward, verifying its
+certificate against the test CA:
+
+```console
+KUBECONFIG="$PWD/artifacts/kubeconfig" kubectl --namespace foreman port-forward service/foreman-foreman-candlepin 23443:23443
+curl --cacert artifacts/certificates/foreman-foreman/ca.crt https://localhost:23443/candlepin/status
+```
 
 ## Access and cleanup
 

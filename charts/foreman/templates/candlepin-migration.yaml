@@ -1,0 +1,65 @@
+{{- if .Values.candlepin.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "foreman.componentName" (list . (printf "candlepin-migrate-%v" .Release.Revision)) }}
+  labels:
+    {{- include "candlepin.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    # Before the Foreman migration: a Candlepin schema failure stops the
+    # release before Foreman's schema changes.
+    helm.sh/hook-weight: "-5"
+spec:
+  backoffLimit: {{ .Values.candlepin.migration.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.candlepin.migration.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "foreman.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: candlepin-migration
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "candlepin.podSecurityContext" . | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: {{ include "candlepin.image" . }}
+          imagePullPolicy: {{ .Values.candlepin.image.pullPolicy }}
+          # The command candlepin-oci-images#90 wraps as candlepin-db-migrate.
+          # Liquibase reads the connection from LIQUIBASE_COMMAND_* variables,
+          # which keeps the password off the command line.
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              webinf=/var/lib/tomcat/webapps/candlepin/WEB-INF
+              jars=("${webinf}"/lib/postgresql*.jar)
+              exec /usr/share/candlepin/liquibase.sh \
+                --driver=org.postgresql.Driver \
+                "--classpath=${jars[0]}:${webinf}/classes" \
+                --changelog-file=db/changelog/changelog-update.xml \
+                update
+          securityContext:
+            {{- include "candlepin.containerSecurityContext" . | nindent 12 }}
+          env:
+            {{- include "candlepin.databaseEnv" . | nindent 12 }}
+            - name: JAVA_HOME
+              value: /usr/lib/jvm/java-25-openjdk
+            - name: LIQUIBASE_COMMAND_URL
+              value: $(JDBC_URL)
+            - name: LIQUIBASE_COMMAND_USERNAME
+              value: $(JDBC_USERNAME)
+            - name: LIQUIBASE_COMMAND_PASSWORD
+              value: $(JDBC_PASSWORD)
+            - name: LIQUIBASE_ANALYTICS_ENABLED
+              value: "false"
+          resources:
+            {{- toYaml .Values.candlepin.migration.resources | nindent 12 }}
+{{- end }}

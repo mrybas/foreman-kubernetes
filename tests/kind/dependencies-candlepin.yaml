@@ -1,0 +1,36 @@
+# Candlepin database and user in the test PostgreSQL from dependencies.yaml.
+# A Job rather than an init script, so it also works on a running database.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: candlepin-database
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: create
+          image: postgres:16-alpine
+          env:
+            - name: PGHOST
+              value: postgresql
+            - name: PGUSER
+              value: postgres
+            - name: PGPASSWORD
+              value: postgres-test
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              psql -v ON_ERROR_STOP=1 <<'SQL'
+              SELECT 'CREATE USER candlepin WITH PASSWORD ''candlepin-test'''
+                WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'candlepin')\gexec
+              SELECT 'CREATE DATABASE candlepin OWNER candlepin'
+                WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'candlepin')\gexec
+              SQL
+          resources:
+            requests:
+              memory: 32Mi
+            limits:
+              memory: 64Mi

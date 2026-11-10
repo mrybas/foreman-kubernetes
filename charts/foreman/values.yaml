@@ -51,6 +51,23 @@ certificates:
     # presents as a TLS client. Default <release>-client-tls. Its CN should be
     # the Foreman FQDN.
     secretName: ""
+  # Candlepin mounts these whenever candlepin.enabled is true, independent of
+  # certificates.enabled.
+  candlepin:
+    ca:
+      # kubernetes.io/tls Secret (tls.crt, tls.key) with the CA certificate and
+      # private key Candlepin uses to sign consumer certificates. Tomcat also
+      # uses tls.crt to verify client certificates. Default
+      # <release>-candlepin-ca. Whoever holds this key can issue certificates
+      # that everything trusting this CA accepts.
+      secretName: ""
+    server:
+      # kubernetes.io/tls Secret (tls.crt, tls.key) with the Tomcat HTTPS server
+      # certificate. Default <release>-candlepin-tls. Its SANs must include the
+      # Candlepin Service name <fullname>-candlepin (by default
+      # <release>-foreman-candlepin) and localhost. Foreman must
+      # trust its issuer through the certificates.ca bundle.
+      secretName: ""
 
 # Dynflow runs Foreman background tasks in Sidekiq processes that use the
 # same image as the web pod. Enabling it also enables the foreman-tasks plugin
@@ -104,6 +121,43 @@ resources:
     memory: 512Mi
   limits:
     memory: 2Gi
+
+# Candlepin manages subscriptions and content access for Katello. Disabled by
+# default. It always runs as a single replica because it embeds its messaging
+# broker (Artemis), which cannot be shared between pods.
+candlepin:
+  enabled: false
+  image:
+    repository: quay.io/foreman/candlepin
+    tag: foreman-nightly
+    pullPolicy: IfNotPresent
+  # Existing Secret with the database connection and the OAuth secret Katello
+  # uses to authenticate to Candlepin. The keys below name its entries.
+  existingSecret: candlepin-runtime
+  # JDBC URL, for example
+  # jdbc:postgresql://postgresql:5432/candlepin?sslmode=disable
+  databaseUrlSecretKey: DATABASE_URL
+  databaseUsernameSecretKey: DATABASE_USERNAME
+  databasePasswordSecretKey: DATABASE_PASSWORD
+  oauthSecretSecretKey: OAUTH_SECRET
+  # Options for the Tomcat JVM, mainly the heap size. Keep the maximum heap
+  # well below resources.limits.memory.
+  javaOpts: -Xms512m -Xmx1g
+  migration:
+    backoffLimit: 2
+    activeDeadlineSeconds: 900
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 1Gi
+    limits:
+      memory: 2Gi
 
 test:
   image: curlimages/curl:8.17.0

@@ -1,0 +1,131 @@
+{{- if .Values.candlepin.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "candlepin.fullname" . }}
+  labels:
+    {{- include "candlepin.labels" . | nindent 4 }}
+spec:
+  # One replica only: Candlepin embeds its Artemis messaging broker.
+  replicas: 1
+  # Never run an old and a new Candlepin side by side.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "candlepin.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "candlepin.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/candlepin-configmap.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "candlepin.podSecurityContext" . | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: candlepin
+          image: {{ include "candlepin.image" . }}
+          imagePullPolicy: {{ .Values.candlepin.image.pullPolicy }}
+          command:
+            - /usr/libexec/tomcat/server
+            - start
+          securityContext:
+            {{- include "candlepin.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: https
+              containerPort: 23443
+              protocol: TCP
+          env:
+            {{- include "candlepin.databaseEnv" . | nindent 12 }}
+            - name: KATELLO_OAUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.candlepin.existingSecret }}
+                  key: {{ .Values.candlepin.oauthSecretSecretKey }}
+          volumeMounts:
+            - name: configuration
+              mountPath: /etc/candlepin/candlepin.conf
+              subPath: candlepin.conf
+              readOnly: true
+            - name: configuration
+              mountPath: /etc/tomcat/server.xml
+              subPath: server.xml
+              readOnly: true
+            - name: configuration
+              mountPath: /etc/tomcat/tomcat.conf
+              subPath: tomcat.conf
+              readOnly: true
+            - name: configuration
+              mountPath: /etc/tomcat/logging.properties
+              subPath: logging.properties
+              readOnly: true
+            - name: configuration
+              mountPath: /var/lib/tomcat/webapps/candlepin/WEB-INF/classes/logback.xml
+              subPath: logback.xml
+              readOnly: true
+            - name: certificates
+              mountPath: {{ include "candlepin.certificatesPath" . }}
+              readOnly: true
+            # Artemis journal. Candlepin's queues are internal, so losing
+            # them with the pod is acceptable.
+            - name: data
+              mountPath: /var/lib/candlepin
+          startupProbe:
+            httpGet:
+              path: /candlepin/status
+              port: https
+              scheme: HTTPS
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /candlepin/status
+              port: https
+              scheme: HTTPS
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /candlepin/status
+              port: https
+              scheme: HTTPS
+            periodSeconds: 20
+            timeoutSeconds: 10
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.candlepin.resources | nindent 12 }}
+      volumes:
+        - name: configuration
+          configMap:
+            name: {{ include "candlepin.fullname" . }}-config
+            defaultMode: 0444
+        - name: certificates
+          projected:
+            defaultMode: 0440
+            sources:
+              - secret:
+                  name: {{ include "candlepin.caSecretName" . }}
+                  items:
+                    - key: tls.crt
+                      path: ca.crt
+                    - key: tls.key
+                      path: ca.key
+              - secret:
+                  name: {{ include "candlepin.serverTlsSecretName" . }}
+                  items:
+                    - key: tls.crt
+                      path: tls.crt
+                    - key: tls.key
+                      path: tls.key
+        - name: data
+          emptyDir: {}
+{{- end }}

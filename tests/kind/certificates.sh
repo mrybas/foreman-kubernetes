@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
-# Generate a test CA and a client certificate with openssl, and store them as
-# the Secrets the foreman Helm chart reads.
+# Generate a test CA, a Foreman client certificate and a Candlepin server
+# certificate with openssl, and store them as the Secrets the foreman Helm
+# chart reads.
 #
 # Usage: certificates.sh NAMESPACE RELEASE CLIENT_CN
 #
 # Secrets created or updated in NAMESPACE:
-#   <release>-ca          Opaque: ca.crt
-#   <release>-client-tls  kubernetes.io/tls: tls.crt, tls.key, ca.crt
+#   <release>-ca             Opaque: ca.crt
+#   <release>-client-tls     kubernetes.io/tls: tls.crt, tls.key, ca.crt
+#   <release>-candlepin-ca   kubernetes.io/tls: the CA itself (tls.crt, tls.key)
+#   <release>-candlepin-tls  kubernetes.io/tls: tls.crt, tls.key, ca.crt; SANs
+#                            the Candlepin Service name, its in-cluster DNS
+#                            names and localhost
+#
+# The Candlepin Service is named <fullname>-candlepin, as the chart names it.
+# FULLNAME defaults to the chart's <release>-foreman; set it when the release
+# uses fullnameOverride.
 #
 # Files are kept in CERT_DIR (default artifacts/certificates/<namespace>-<release>).
-# Re-running reuses the CA and key, re-issues the certificate only when its
-# name changed, and re-applies the Secrets. Set KUBE_CONTEXT to choose a
+# Re-running reuses the CA and keys, re-issues a certificate only when its
+# names changed, and re-applies the Secrets. Set KUBE_CONTEXT to choose a
 # kubectl context. These certificates are for tests only.
 set -euo pipefail
 
@@ -85,10 +94,17 @@ EOF
   openssl req -x509 -new -key "${dir}/ca.key" -config "${dir}/ca.cnf" -days "${days}" \
     -sha256 -out "${dir}/ca.crt"
   # A new CA invalidates every certificate it did not sign.
-  rm -f "${dir}"/client.names
+  rm -f "${dir}"/client.names "${dir}"/candlepin.names
 fi
 
 issue client "${client_cn}" clientAuth "${client_cn}"
+# The chart shortens the fullname so that <fullname>-candlepin fits in 63
+# characters.
+fullname="${FULLNAME:-${release}-foreman}"
+candlepin="${fullname:0:53}"
+candlepin="${candlepin%-}-candlepin"
+issue candlepin "${candlepin}" serverAuth "${candlepin}" "${candlepin}.${namespace}.svc" \
+  "${candlepin}.${namespace}.svc.cluster.local" localhost
 
 apply_secret() {
   kubectl "${kubectl_args[@]}" create secret generic "$@" --dry-run=client --output=yaml |
@@ -98,4 +114,9 @@ apply_secret() {
 apply_secret "${release}-ca" --from-file=ca.crt="${dir}/ca.crt"
 apply_secret "${release}-client-tls" --type=kubernetes.io/tls \
   --from-file=tls.crt="${dir}/client.crt" --from-file=tls.key="${dir}/client.key" \
+  --from-file=ca.crt="${dir}/ca.crt"
+apply_secret "${release}-candlepin-ca" --type=kubernetes.io/tls \
+  --from-file=tls.crt="${dir}/ca.crt" --from-file=tls.key="${dir}/ca.key"
+apply_secret "${release}-candlepin-tls" --type=kubernetes.io/tls \
+  --from-file=tls.crt="${dir}/candlepin.crt" --from-file=tls.key="${dir}/candlepin.key" \
   --from-file=ca.crt="${dir}/ca.crt"

@@ -404,3 +404,80 @@ initContainers:
   persistentVolumeClaim:
     claimName: {{ include "pulp.claimName" . }}
 {{- end }}
+
+{{/* Candlepin. */}}
+{{- define "candlepin.fullname" -}}
+{{- include "foreman.componentName" (list . "candlepin") }}
+{{- end }}
+
+{{- define "candlepin.labels" -}}
+{{ include "foreman.labels" . }}
+app.kubernetes.io/component: candlepin
+{{- end }}
+
+{{- define "candlepin.selectorLabels" -}}
+{{ include "foreman.selectorLabels" . }}
+app.kubernetes.io/component: candlepin
+{{- end }}
+
+{{- define "candlepin.image" -}}
+{{- printf "%s:%s" .Values.candlepin.image.repository .Values.candlepin.image.tag }}
+{{- end }}
+
+{{- define "candlepin.caSecretName" -}}
+{{- .Values.certificates.candlepin.ca.secretName | default (printf "%s-candlepin-ca" .Release.Name) }}
+{{- end }}
+
+{{- define "candlepin.serverTlsSecretName" -}}
+{{- .Values.certificates.candlepin.server.secretName | default (printf "%s-candlepin-tls" .Release.Name) }}
+{{- end }}
+
+{{- define "candlepin.certificatesPath" -}}
+/etc/candlepin/tls
+{{- end }}
+
+{{/*
+Pod and container security context. The image user is the name tomcat
+(53:53), so the numeric IDs are needed for runAsNonRoot.
+*/}}
+{{- define "candlepin.podSecurityContext" -}}
+fsGroup: 53
+fsGroupChangePolicy: OnRootMismatch
+runAsGroup: 53
+runAsNonRoot: true
+runAsUser: 53
+seccompProfile:
+  type: RuntimeDefault
+{{- end }}
+
+{{- define "candlepin.containerSecurityContext" -}}
+allowPrivilegeEscalation: false
+capabilities:
+  drop:
+    - ALL
+runAsNonRoot: true
+runAsGroup: 53
+runAsUser: 53
+{{- end }}
+
+{{/*
+Database credentials as environment variables. candlepin.conf refers to them
+as ${NAME}; Candlepin resolves these from the environment at startup.
+*/}}
+{{- define "candlepin.databaseEnv" -}}
+- name: JDBC_URL
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.candlepin.existingSecret }}
+      key: {{ .Values.candlepin.databaseUrlSecretKey }}
+- name: JDBC_USERNAME
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.candlepin.existingSecret }}
+      key: {{ .Values.candlepin.databaseUsernameSecretKey }}
+- name: JDBC_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.candlepin.existingSecret }}
+      key: {{ .Values.candlepin.databasePasswordSecretKey }}
+{{- end }}

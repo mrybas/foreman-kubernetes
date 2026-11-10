@@ -42,7 +42,8 @@ case "${1:-}" in
       --from-literal=SECRET_KEY_BASE='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
       --from-literal=SEED_ADMIN_USER=admin --from-literal=SEED_ADMIN_PASSWORD=foreman-test \
       --dry-run=client --output=yaml | kubectl --context "${context}" apply --filename=-
-    # Test CA and Foreman client certificate (CN is the FQDN).
+    # Test CA, Foreman client certificate (CN is the FQDN) and Candlepin
+    # server certificate.
     KUBE_CONTEXT="${context}" "${repo_root}/tests/kind/certificates.sh" \
       "${namespace}" "${release}" foreman.test
     # Valkey shared by Dynflow, the Rails cache and Pulp.
@@ -61,10 +62,21 @@ case "${1:-}" in
       --from-literal=SECRET_KEY='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
       --from-literal=database_fields.symmetric.key='NrWyrMPhzbM0U78AQbiwfU1Lde28CSK_-Eu3i0A-TUo=' \
       --dry-run=client --output=yaml | kubectl --context "${context}" apply --filename=-
+    # Candlepin database, credentials and OAuth secret for Katello.
+    kubectl --context "${context}" --namespace "${namespace}" apply \
+      --filename "${repo_root}/tests/kind/dependencies-candlepin.yaml"
+    kubectl --context "${context}" --namespace "${namespace}" wait job/candlepin-database \
+      --for=condition=complete --timeout=180s
+    kubectl --context "${context}" --namespace "${namespace}" create secret generic candlepin-runtime \
+      --from-literal=DATABASE_URL='jdbc:postgresql://postgresql:5432/candlepin?sslmode=disable' \
+      --from-literal=DATABASE_USERNAME=candlepin --from-literal=DATABASE_PASSWORD=candlepin-test \
+      --from-literal=OAUTH_SECRET=candlepin-oauth-test \
+      --dry-run=client --output=yaml | kubectl --context "${context}" apply --filename=-
     helm upgrade --install "${release}" "${repo_root}/charts/foreman" \
       --kube-context "${context}" --namespace "${namespace}" \
       --set-string foreman.fqdn=foreman.test --set-string foreman.externalUrl=http://foreman.test \
       --set certificates.enabled=true --set dynflow.enabled=true --set pulp.enabled=true \
+      --set candlepin.enabled=true \
       --wait --wait-for-jobs --timeout 20m
     ;;
   diagnostics)
