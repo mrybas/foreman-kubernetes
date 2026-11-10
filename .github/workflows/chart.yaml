@@ -22,6 +22,30 @@ jobs:
       - name: Lint charts
         run: make lint
 
+  static:
+    name: Chart Static Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
+        with:
+          version: v4.3.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: make setup-test-env
+      - name: Run static chart tests
+        run: make test-static
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: chart-static-test-results
+          path: artifacts/junit-static.xml
+          if-no-files-found: warn
+
   test:
     name: Foreman Installation
     runs-on: ubuntu-latest

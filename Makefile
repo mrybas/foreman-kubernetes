@@ -6,13 +6,16 @@ KUBECONFIG := $(CURDIR)/artifacts/kubeconfig
 export KIND_CLUSTER_NAME KIND_NAMESPACE HELM_RELEASE KUBECONFIG
 export KIND_EXPERIMENTAL_PROVIDER ?= podman
 
-.PHONY: lint setup-test-env setup-kind test teardown-kind diagnostics
+.PHONY: lint setup-test-env test-static setup-kind test teardown-kind diagnostics
 lint:
 	@find . -type f -name Chart.yaml -not -path './.git/*' -exec sh -c 'for chart do helm lint "$${chart%/Chart.yaml}" || exit $$?; done' sh {} +
 
 setup-test-env:
 	python3 -m venv .venv
 	$(TEST_PYTHON) -m pip install -r tests/requirements.txt
+
+test-static:
+	$(TEST_PYTHON) -m pytest -v tests/static --junitxml=artifacts/junit-static.xml
 
 setup-kind:
 	tests/kind/run-minimal.sh setup

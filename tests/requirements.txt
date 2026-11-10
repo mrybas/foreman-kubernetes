@@ -1,1 +1,3 @@
+pytest==8.4.2
 pytest-helm-charts==1.3.4
+PyYAML==6.0.3

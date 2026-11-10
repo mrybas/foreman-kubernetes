@@ -3,6 +3,7 @@
 ## Build and test
 
 - Lint: `make lint`
+- Static chart tests (no cluster): `make setup-test-env`, `make test-static`
 - Integration: `make setup-test-env`, `make setup-kind`, `make test`
 - Diagnostics: `make diagnostics`; cleanup: `make teardown-kind`
 - Integration uses native Linux AMD64 and defaults to Podman; see
