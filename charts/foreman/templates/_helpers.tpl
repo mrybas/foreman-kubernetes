@@ -34,8 +34,23 @@ app.kubernetes.io/name: {{ include "foreman.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
+{{/*
+Image reference from an image value (repository, tag, digest). A digest wins
+over the tag and must be sha256:<64 hex digits>.
+*/}}
+{{- define "foreman.imageReference" -}}
+{{- if .digest }}
+{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" .digest) }}
+{{- fail (printf "image digest of %s must be sha256:<64 hex digits>, got %q" .repository .digest) }}
+{{- end }}
+{{- printf "%s@%s" .repository .digest }}
+{{- else }}
+{{- printf "%s:%s" .repository .tag }}
+{{- end }}
+{{- end }}
+
 {{- define "foreman.image" -}}
-{{- printf "%s:%s" .Values.image.repository .Values.image.tag }}
+{{- include "foreman.imageReference" .Values.image }}
 {{- end }}
 
 {{- define "foreman.configName" -}}
@@ -262,7 +277,7 @@ Every Foreman pod shares the cache, so Dynflow and web see the same values.
 {{- end }}
 
 {{- define "pulp.image" -}}
-{{- printf "%s:%s" .Values.pulp.image.repository .Values.pulp.image.tag }}
+{{- include "foreman.imageReference" .Values.pulp.image }}
 {{- end }}
 
 {{/* Labels for a Pulp object. Call with (dict "context" $ "component" "pulp-api"). */}}
@@ -464,7 +479,7 @@ app.kubernetes.io/component: candlepin
 {{- end }}
 
 {{- define "candlepin.image" -}}
-{{- printf "%s:%s" .Values.candlepin.image.repository .Values.candlepin.image.tag }}
+{{- include "foreman.imageReference" .Values.candlepin.image }}
 {{- end }}
 
 {{- define "candlepin.caSecretName" -}}
@@ -541,11 +556,7 @@ app.kubernetes.io/component: httpd
 {{- end }}
 
 {{- define "httpd.image" -}}
-{{- if .Values.httpd.image.digest }}
-{{- printf "%s@%s" .Values.httpd.image.repository .Values.httpd.image.digest }}
-{{- else }}
-{{- printf "%s:%s" .Values.httpd.image.repository .Values.httpd.image.tag }}
-{{- end }}
+{{- include "foreman.imageReference" .Values.httpd.image }}
 {{- end }}
 
 {{/* Backends, as in-cluster Service URLs. */}}
@@ -769,6 +780,10 @@ katello-config volume. Every pod that loads Katello runs it.
   mountPath: /etc/foreman/plugins/katello.yaml
   subPath: katello.yaml
   readOnly: true
+{{- end }}
+
+{{- define "proxy.image" -}}
+{{- include "foreman.imageReference" .Values.proxy.image }}
 {{- end }}
 
 {{- define "proxy.fullname" -}}

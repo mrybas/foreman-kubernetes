@@ -44,7 +44,7 @@ spec:
       {{- end }}
       containers:
         - name: foreman-proxy
-          image: {{ printf "%s:%s" .Values.proxy.image.repository .Values.proxy.image.tag }}
+          image: {{ include "proxy.image" . }}
           imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
           command:
             - /usr/share/foreman-proxy/bin/smart-proxy

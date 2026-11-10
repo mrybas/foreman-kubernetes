@@ -1,8 +1,13 @@
 replicaCount: 1
 
+# Every image value below takes repository, tag and digest. A digest
+# (sha256:...) takes precedence over the tag; pin digests for reproducible
+# installs and upgrades. The Foreman image is used by the web, Dynflow and
+# migration pods.
 image:
   repository: quay.io/foreman/foreman
   tag: nightly
+  digest: ""
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -170,6 +175,7 @@ proxy:
   image:
     repository: quay.io/foreman/foreman-proxy
     tag: nightly
+    digest: ""
     pullPolicy: IfNotPresent
   # Name of the Smart Proxy in Foreman. Empty means the host name of url.
   name: ""
@@ -249,6 +255,7 @@ candlepin:
   image:
     repository: quay.io/foreman/candlepin
     tag: foreman-nightly
+    digest: ""
     pullPolicy: IfNotPresent
   # Existing Secret with the database connection and the OAuth secret Katello
   # uses to authenticate to Candlepin. The keys below name its entries.
@@ -278,8 +285,12 @@ candlepin:
     limits:
       memory: 2Gi
 
+# Image of the pod that `helm test` runs to ping Foreman.
 test:
-  image: curlimages/curl:8.17.0
+  image:
+    repository: curlimages/curl
+    tag: 8.17.0
+    digest: ""
 
 # Pulp serves repository content for Katello. It runs as three Deployments
 # (api, content, worker) that share one content volume, plus a migration Job
@@ -290,6 +301,7 @@ pulp:
   image:
     repository: quay.io/foreman/pulp
     tag: foreman-nightly
+    digest: ""
     pullPolicy: IfNotPresent
   # Secret in the release namespace with the keys named below.
   existingSecret: pulp-runtime
