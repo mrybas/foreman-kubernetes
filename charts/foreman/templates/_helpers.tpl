@@ -62,7 +62,21 @@ settings.yaml: |
   :foreman_url: {{ $context.Values.foreman.externalUrl | quote }}
   :hosts:
     - {{ $context.Values.foreman.fqdn | quote }}
-  :require_ssl: false
+  :require_ssl: {{ and .web $context.Values.httpd.enabled }}
+  {{- if and .web (or $context.Values.httpd.enabled $context.Values.foreman.trustedProxies) }}
+  :trusted_proxies:
+    - 127.0.0.0/8
+    - "::1"
+    {{- range $context.Values.foreman.trustedProxies }}
+    - {{ . | quote }}
+    {{- end }}
+  {{- end }}
+  {{- if and .web $context.Values.httpd.enabled }}
+  # Client certificate headers set by the httpd front door.
+  :ssl_client_dn_env: HTTP_SSL_CLIENT_S_DN
+  :ssl_client_verify_env: HTTP_SSL_CLIENT_VERIFY
+  :ssl_client_cert_env: HTTP_SSL_CLIENT_CERT
+  {{- end }}
   {{- if and .web $context.Values.certificates.enabled }}
   :ssl_ca_file: {{ include "foreman.certificatesPath" $context }}/ca.crt
   :ssl_certificate: {{ include "foreman.certificatesPath" $context }}/client.crt
@@ -76,6 +90,10 @@ settings.yaml: |
 
 {{- define "foreman.caSecretName" -}}
 {{- .Values.certificates.ca.secretName | default (printf "%s-ca" .Release.Name) }}
+{{- end }}
+
+{{- define "foreman.serverTlsSecretName" -}}
+{{- .Values.certificates.server.secretName | default (printf "%s-server-tls" .Release.Name) }}
 {{- end }}
 
 {{- define "foreman.clientTlsSecretName" -}}
@@ -480,4 +498,151 @@ as ${NAME}; Candlepin resolves these from the environment at startup.
     secretKeyRef:
       name: {{ .Values.candlepin.existingSecret }}
       key: {{ .Values.candlepin.databasePasswordSecretKey }}
+{{- end }}
+
+{{/* httpd front door. */}}
+{{- define "httpd.fullname" -}}
+{{- include "foreman.componentName" (list . "httpd") }}
+{{- end }}
+
+{{- define "httpd.labels" -}}
+{{ include "foreman.labels" . }}
+app.kubernetes.io/component: httpd
+{{- end }}
+
+{{- define "httpd.selectorLabels" -}}
+{{ include "foreman.selectorLabels" . }}
+app.kubernetes.io/component: httpd
+{{- end }}
+
+{{- define "httpd.image" -}}
+{{- if .Values.httpd.image.digest }}
+{{- printf "%s@%s" .Values.httpd.image.repository .Values.httpd.image.digest }}
+{{- else }}
+{{- printf "%s:%s" .Values.httpd.image.repository .Values.httpd.image.tag }}
+{{- end }}
+{{- end }}
+
+{{/* Backends, as in-cluster Service URLs. */}}
+{{- define "httpd.foremanBackend" -}}
+{{- printf "http://%s:%v" (include "foreman.fullname" .) .Values.service.port }}
+{{- end }}
+
+{{- define "httpd.pulpApiBackend" -}}
+{{- printf "http://%s-api:24817" (include "pulp.fullname" .) }}
+{{- end }}
+
+{{- define "httpd.pulpContentBackend" -}}
+{{- printf "http://%s-content:24816" (include "pulp.fullname" .) }}
+{{- end }}
+
+{{- define "httpd.pulpEnabled" -}}
+{{- if (.Values.pulp).enabled }}true{{ end }}
+{{- end }}
+
+{{- define "httpd.candlepinEnabled" -}}
+{{- if (.Values.candlepin).enabled }}true{{ end }}
+{{- end }}
+
+{{- define "httpd.serverNames" -}}
+ServerName {{ .Values.foreman.fqdn }}
+{{- $service := include "httpd.fullname" . }}
+ServerAlias {{ $service }} {{ $service }}.{{ .Release.Namespace }}.svc {{ $service }}.{{ .Release.Namespace }}.svc.cluster.local
+{{- range .Values.httpd.serverAliases }}
+ServerAlias {{ . }}
+{{- end }}
+{{- end }}
+
+{{/*
+RequestHeader unset for every spelling of a header name. Rack (Foreman,
+Katello) and Django (Pulp) map "-" and "_" to the same variable, so
+X-RHSM_SSL-CLIENT-CERT arrives as HTTP_X_RHSM_SSL_CLIENT_CERT, while
+RequestHeader unset removes one exact name (in any case). Takes the name with
+hyphens and emits one line per combination of "-" and "_".
+*/}}
+{{- define "httpd.unsetEverySpelling" -}}
+{{- $parts := splitList "-" . }}
+{{- $names := list (first $parts) }}
+{{- range rest $parts }}
+{{- $part := . }}
+{{- $next := list }}
+{{- range $names }}
+{{- $next = append $next (printf "%s-%s" . $part) }}
+{{- $next = append $next (printf "%s_%s" . $part) }}
+{{- end }}
+{{- $names = $next }}
+{{- end }}
+{{- range $names }}
+RequestHeader unset {{ . }}
+{{- end }}
+{{- end }}
+
+{{/*
+Request headers that Foreman, Katello or Pulp trust when httpd sends them:
+external login (REMOTE-USER, as foremanctl removes it), the client certificate
+(Katello reads X-RHSM-SSL-CLIENT-CERT before SSL-CLIENT-CERT and does not
+check its signature), and the forwarding chain (client address, host and
+scheme; Rack reads X-Forwarded-Ssl and Forwarded before X-Forwarded-Proto).
+httpd removes every spelling a client sends, before it sets its own values.
+mod_proxy then adds X-Forwarded-For, X-Forwarded-Host and X-Forwarded-Server
+for the real peer.
+*/}}
+{{- define "httpd.unsetClientHeaders" -}}
+{{- range list
+  "REMOTE-USER" "REMOTE-USER-EMAIL" "REMOTE-USER-FIRSTNAME" "REMOTE-USER-LASTNAME" "REMOTE-USER-GROUPS"
+  "SSL-CLIENT-S-DN" "SSL-CLIENT-CERT" "SSL-CLIENT-VERIFY" "X-RHSM-SSL-CLIENT-CERT" "X-CLIENT-CERT"
+  "X-FORWARDED-FOR" "X-FORWARDED-HOST" "X-FORWARDED-PORT" "X-FORWARDED-PROTO" "X-FORWARDED-SCHEME"
+  "X-FORWARDED-SSL" "X-FORWARDED-SERVER" "FORWARDED" "CLIENT-IP" }}
+{{- include "httpd.unsetEverySpelling" . }}
+{{- end }}
+{{- end }}
+
+{{/* REMOTE-USER admin for Pulp API calls with a trusted client certificate. */}}
+{{- define "httpd.pulpRemoteUser" -}}
+RequestHeader unset REMOTE_USER
+RequestHeader unset REMOTE-USER
+{{- range prepend .Values.httpd.pulpTrustedClientNames .Values.foreman.fqdn }}
+RequestHeader set REMOTE-USER "admin" "expr=%{SSL_CLIENT_VERIFY} == 'SUCCESS' && %{SSL_CLIENT_S_DN_CN} == '{{ . }}'"
+{{- end }}
+{{- end }}
+
+{{/* /pulp/content and /pulp/isos, the same on both ports. */}}
+{{- define "httpd.pulpContent" -}}
+{{- $backend := include "httpd.pulpContentBackend" . }}
+{{- range list "/pulp/content" "/pulp/isos" }}
+<Location "{{ . }}">
+  RequestHeader set X-CLIENT-CERT "%{SSL_CLIENT_CERT}s" env=SSL_CLIENT_CERT
+  RequestHeader set X-FORWARDED-PROTO expr=%{REQUEST_SCHEME}
+  ProxyPass {{ $backend }}/pulp/content disablereuse=on timeout=600
+  ProxyPassReverse {{ $backend }}/pulp/content
+</Location>
+{{- end }}
+{{- end }}
+
+{{/* /pub with the server CA, and the registration script that Katello serves. */}}
+{{- define "httpd.pub" -}}
+{{- if or (include "httpd.pulpEnabled" .) (include "httpd.candlepinEnabled" .) }}
+RewriteEngine On
+RewriteRule ^/pub/katello-rhsm-consumer$ {{ include "httpd.foremanBackend" . }}/unattended/public/katello-rhsm-consumer [P]
+ProxyPassReverse /pub/katello-rhsm-consumer {{ include "httpd.foremanBackend" . }}/unattended/public/katello-rhsm-consumer
+{{- end }}
+Alias /pub /var/www/pub
+<Location /pub>
+  Options +FollowSymLinks +Indexes
+  Require all granted
+</Location>
+{{- end }}
+
+{{/* Everything else goes to Foreman. */}}
+{{- define "httpd.foremanProxy" -}}
+ProxyRequests Off
+ProxyPreserveHost On
+ProxyAddHeaders On
+ProxyPass /pulp !
+ProxyPass /pub !
+ProxyPass /icons !
+ProxyPass /images !
+ProxyPass /server-status !
+ProxyPass / {{ include "httpd.foremanBackend" . }}/ retry=0 timeout=900 upgrade=websocket
+ProxyPassReverse / {{ include "httpd.foremanBackend" . }}/
 {{- end }}

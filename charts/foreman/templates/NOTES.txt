@@ -2,6 +2,12 @@ Foreman is available inside the cluster at:
 
   http://{{ include "foreman.fullname" . }}:{{ .Values.service.port }}
 
+{{ if .Values.httpd.enabled -}}
+The HTTPS front door is the Service {{ include "httpd.fullname" . }} (ports 80 and 443)
+for https://{{ .Values.foreman.fqdn }}. The server CA is published at
+https://{{ .Values.foreman.fqdn }}/pub/katello-server-ca.crt.
+
+{{ end -}}
 Run the chart smoke test with:
 
   helm test {{ .Release.Name }} --namespace {{ .Release.Namespace }} --logs

@@ -2,8 +2,9 @@
 
 This experimental, unsupported milestone installs a single core Foreman web pod
 backed by PostgreSQL. Optionally it adds Dynflow with the Foreman Tasks plugin
-for background tasks, Pulp, and Candlepin. It does not enable Katello, Smart
-Proxy features, high availability, or production ingress.
+for background tasks, Pulp, Candlepin, and an HTTPS front door. It does not
+enable Katello, Smart Proxy features, high availability, or production
+ingress.
 
 ## Dependencies
 
@@ -35,10 +36,11 @@ across commands if that name is already in use. To use Docker explicitly, set
 `KIND_EXPERIMENTAL_PROVIDER=docker` on each cluster command.
 
 `test` installs disposable PostgreSQL and Valkey, creates test credentials and
-test certificates, and installs the chart with Dynflow, Pulp and Candlepin
-enabled. Helm waits for the migration Jobs and the ready Deployments.
+test certificates, and installs the chart with the HTTPS front door, Dynflow,
+Pulp and Candlepin enabled. Helm waits for the migration Jobs and the ready
+Deployments.
 Then [pytest-helm-charts](https://github.com/giantswarm/pytest-helm-charts) connects
-to that cluster and runs the tests in `tests/integration`. For Foreman: the web
+to that cluster and runs the 40 tests in `tests/integration`. For Foreman: the web
 Deployment is available, the API reports an active database, the seeded
 administrator can query the users API, the web pod has the CA bundle from its
 Secret, and the `foreman` user in the web pod can read the client key and verify
@@ -50,7 +52,16 @@ answers only with a known `REMOTE-USER`, only pods allowed by the NetworkPolicy
 reach the API, and the content app answers. For Candlepin: its Deployment is
 available, `/candlepin/status` reports mode `NORMAL` over HTTPS verified against
 the CA bundle for each name in the server certificate, another name is
-rejected, and the log contains no credentials.
+rejected, and the log contains no credentials. For the front door: HTTPS with
+the server certificate verified for the FQDN and the in-cluster Service name,
+the redirect from HTTP to HTTPS, the CA download under `/pub` over both
+protocols, that client-supplied `REMOTE-USER` and `SSL-CLIENT-*` headers in any
+spelling do not log anyone in, that client-supplied `X-Forwarded-*` headers
+neither change the client address Foreman sees nor make plain HTTP count as
+HTTPS, that a client certificate from the CA is accepted and a self-signed one
+is rejected, that only the httpd pods of the release can connect to the
+Foreman web port, and that the Pulp API through httpd accepts the Foreman
+client certificate as the Pulp administrator and refuses clients without it.
 Pytest prints the test count and writes `artifacts/junit.xml` for CI reporting.
 The optional in-cluster smoke test can also be run with `helm test`.
 
@@ -73,6 +84,7 @@ change them.
 | --- | --- | --- |
 | `foreman-ca` | `ca.crt` | CA bundle Foreman trusts for outgoing HTTPS connections |
 | `foreman-client-tls` | `kubernetes.io/tls`: `tls.crt`, `tls.key` | Certificate Foreman presents as a TLS client. Its common name (CN) should be `foreman.fqdn` |
+| `foreman-server-tls` | `kubernetes.io/tls`: `tls.crt`, `tls.key`, `ca.crt` | HTTPS server certificate of the front door. Its subject alternative names (SANs) must include `foreman.fqdn` and `foreman-foreman-httpd.<namespace>.svc` |
 
 With `certificates.enabled=true` the web pod mounts the CA bundle and the client
 certificate read-only under `/etc/foreman/certs`. Foreman uses them, through the
@@ -80,12 +92,14 @@ certificate read-only under `/etc/foreman/certs`. Foreman uses them, through the
 connections to Smart Proxies. The migration Job does not mount them.
 `certificates.enabled` is `false` by default.
 
-`make test` creates both Secrets with `tests/kind/certificates.sh` and installs
+`make test` creates the Secrets with `tests/kind/certificates.sh` and installs
 the chart with `certificates.enabled=true`. To create test certificates in
-another cluster, pass the namespace, the release name and the client CN:
+another cluster, pass the namespace, the release name, the client CN and the
+server certificate names:
 
 ```console
-tests/kind/certificates.sh foreman foreman foreman.example.test
+tests/kind/certificates.sh foreman foreman foreman.example.test \
+  foreman.example.test foreman-foreman-httpd foreman-foreman-httpd.foreman.svc
 ```
 
 The script keeps the generated keys under `artifacts/certificates/` and reuses
@@ -149,9 +163,9 @@ are scheduled on the node of a Pulp API pod. All Pulp pods therefore run on one
 node; set `pulp.storage.colocate=false` only with ReadWriteMany storage.
 
 The Pulp API trusts the user name in the `REMOTE-USER` request header and
-accepts no passwords. It is meant to sit behind a front door that sets this
-header from a verified client certificate. The chart does not include that
-front door yet. A NetworkPolicy lets only pods labelled
+accepts no passwords. It is meant to sit behind the
+[HTTPS front door](#https-front-door), which sets this header from a verified
+client certificate. A NetworkPolicy lets only pods labelled
 `app.kubernetes.io/component: httpd` of the same release connect to the API.
 Anyone who can create pods in the namespace can give a pod these labels. On
 clusters whose network plugin ignores NetworkPolicy, any pod that reaches
@@ -189,19 +203,51 @@ KUBECONFIG="$PWD/artifacts/kubeconfig" kubectl --namespace foreman port-forward 
 curl --cacert artifacts/certificates/foreman-foreman/ca.crt https://localhost:23443/candlepin/status
 ```
 
+## HTTPS front door
+
+With `httpd.enabled=true` the chart runs Apache httpd in front of Foreman, with
+the configuration that [foremanctl](https://github.com/theforeman/foremanctl)
+uses. The `<fullname>-httpd` Service (`foreman-foreman-httpd` for a release
+called `foreman`) listens on port 443 and on port 80, which serves `/pub` and
+redirects everything else to HTTPS. Clients may present a certificate signed by
+the `foreman-ca` bundle, and httpd passes it to Foreman. Before httpd sets its
+own values, it removes every spelling, with `-` or `_`, of the headers that
+Foreman, Katello and Pulp trust: `REMOTE-USER`, `SSL-CLIENT-*`,
+`X-RHSM-SSL-CLIENT-CERT`, `X-CLIENT-CERT`, `X-Forwarded-*`, `Forwarded` and
+`Client-IP`. Foreman then requires HTTPS, and a NetworkPolicy lets only the
+httpd pods of the release (and the `helm test` pod) connect to the Foreman web
+port, so other pods cannot skip httpd. This needs a network plugin that
+enforces NetworkPolicy. Without httpd the chart adds no such policy, because
+Foreman then trusts none of these headers.
+The server CA is published at `/pub/katello-server-ca.crt`.
+
+The Service is `ClusterIP` by default. Set `httpd.service.type=LoadBalancer`,
+and `httpd.service.externalTrafficPolicy=Local` to keep client addresses, to
+expose it outside the cluster. Set `foreman.trustedProxies` to the pod network
+range so Foreman logs the client address that httpd forwards; httpd replaces
+any `X-Forwarded-For` the client sends. With Pulp
+enabled, httpd also routes `/pulp/api/v3`, `/pulp/content` and the other Pulp
+paths, and maps a client certificate whose CN is `foreman.fqdn` to the Pulp
+administrator. Set `pulp.settings.smartProxyPulpUrl` to the in-cluster name of
+the front door, `https://<fullname>-httpd.<namespace>.svc`, because `foreman.fqdn`
+may not resolve inside the cluster; `pulp.settings.contentOrigin` stays
+`https://<foreman.fqdn>`. `make test` sets both. Candlepin is never exposed;
+Foreman answers `/rhsm` itself.
+
 ## Access and cleanup
 
-Forward the Service using the test kubeconfig:
+Forward the front door Service using the test kubeconfig:
 
 ```console
-KUBECONFIG="$PWD/artifacts/kubeconfig" kubectl --namespace foreman port-forward service/foreman-foreman 3000:3000
+KUBECONFIG="$PWD/artifacts/kubeconfig" kubectl --namespace foreman port-forward service/foreman-foreman-httpd 8443:443
 ```
 
-Open `http://foreman.test:3000` after mapping `foreman.test` to `127.0.0.1`, or
-send the host header explicitly:
+Open `https://foreman.test:8443` after mapping `foreman.test` to `127.0.0.1`
+and trusting the test CA, or use curl:
 
 ```console
-curl --header 'Host: foreman.test' http://127.0.0.1:3000/api/v2/ping
+curl --cacert artifacts/certificates/foreman-foreman/ca.crt \
+  --resolve foreman.test:8443:127.0.0.1 https://foreman.test:8443/api/v2/ping
 ```
 
 The credentials `admin` / `foreman-test` are only suitable for this disposable

@@ -67,6 +67,11 @@ spec:
               httpHeaders:
                 - name: Host
                   value: {{ .Values.foreman.fqdn | quote }}
+                {{- if .Values.httpd.enabled }}
+                # Foreman requires HTTPS behind httpd and would redirect.
+                - name: X-Forwarded-Proto
+                  value: https
+                {{- end }}
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 12

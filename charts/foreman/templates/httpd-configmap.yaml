@@ -1,0 +1,129 @@
+{{- if .Values.httpd.enabled }}
+{{- if not .Values.certificates.enabled }}
+{{- fail "httpd.enabled requires certificates.enabled" }}
+{{- end }}
+{{- $pulp := include "httpd.pulpEnabled" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "httpd.fullname" . }}
+  labels:
+    {{- include "httpd.labels" . | trim | nindent 4 }}
+data:
+  httpd.conf: |
+    ServerRoot /etc/httpd
+    ServerName {{ .Values.foreman.fqdn }}
+    DefaultRuntimeDir /tmp
+    PidFile /tmp/httpd.pid
+    Listen 8080
+    Listen 8443 https
+
+    LoadModule mpm_event_module modules/mod_mpm_event.so
+    LoadModule unixd_module modules/mod_unixd.so
+    LoadModule authz_core_module modules/mod_authz_core.so
+    LoadModule log_config_module modules/mod_log_config.so
+    LoadModule mime_module modules/mod_mime.so
+    LoadModule alias_module modules/mod_alias.so
+    LoadModule autoindex_module modules/mod_autoindex.so
+    LoadModule dir_module modules/mod_dir.so
+    LoadModule headers_module modules/mod_headers.so
+    LoadModule rewrite_module modules/mod_rewrite.so
+    LoadModule proxy_module modules/mod_proxy.so
+    LoadModule proxy_http_module modules/mod_proxy_http.so
+    LoadModule socache_shmcb_module modules/mod_socache_shmcb.so
+    LoadModule ssl_module modules/mod_ssl.so
+
+    ServerTokens Prod
+    ServerSignature Off
+    TraceEnable Off
+    ErrorLog /dev/stderr
+    LogLevel warn
+    LogFormat "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\"" combined
+    CustomLog /dev/stdout combined
+    TypesConfig /etc/mime.types
+    AddDefaultCharset UTF-8
+
+    <Directory />
+      AllowOverride None
+      Require all denied
+    </Directory>
+    <Directory /var/www/pub>
+      Require all granted
+    </Directory>
+
+    SSLSessionCache shmcb:/tmp/ssl_scache(512000)
+    SSLProtocol -all +TLSv1.2 +TLSv1.3
+
+    Include /etc/httpd-foreman/foreman.conf
+    Include /etc/httpd-foreman/foreman-ssl.conf
+
+  # Ported from foremanctl src/roles/httpd/templates/foreman-vhost.conf.j2.
+  foreman.conf: |
+    <VirtualHost *:8080>
+      {{- include "httpd.serverNames" . | trim | nindent 6 }}
+      {{- include "httpd.unsetClientHeaders" . | trim | indent 6 | printf "\n\n%s" }}
+      RequestHeader set X-FORWARDED-PROTO "http"
+      RequestHeader set SSL-CLIENT-S-DN ""
+      RequestHeader set SSL-CLIENT-CERT ""
+      RequestHeader set SSL-CLIENT-VERIFY ""
+      {{- if $pulp }}
+
+      {{- include "httpd.pulpContent" . | trim | nindent 6 }}
+      {{- end }}
+
+      {{- include "httpd.pub" . | trim | nindent 6 }}
+
+      {{- include "httpd.foremanProxy" . | trim | nindent 6 }}
+    </VirtualHost>
+
+  # Ported from foremanctl src/roles/httpd/templates/foreman-ssl-vhost.conf.j2.
+  foreman-ssl.conf: |
+    <VirtualHost *:8443>
+      {{- include "httpd.serverNames" . | trim | nindent 6 }}
+      {{- include "httpd.unsetClientHeaders" . | trim | indent 6 | printf "\n\n%s" }}
+      RequestHeader set X-FORWARDED-PROTO "https"
+      RequestHeader set SSL-CLIENT-S-DN "%{SSL_CLIENT_S_DN}s"
+      RequestHeader set SSL-CLIENT-CERT "%{SSL_CLIENT_CERT}s"
+      RequestHeader set SSL-CLIENT-VERIFY "%{SSL_CLIENT_VERIFY}s"
+
+      SSLEngine on
+      SSLCertificateFile /etc/httpd-tls/server.crt
+      SSLCertificateKeyFile /etc/httpd-tls/server.key
+      SSLCertificateChainFile /etc/httpd-tls/server-ca.crt
+      SSLVerifyClient optional
+      SSLVerifyDepth 3
+      SSLCACertificateFile /etc/httpd-tls/client-ca.crt
+      SSLOptions +StdEnvVars +ExportCertData
+      {{- if $pulp }}
+      {{- $api := include "httpd.pulpApiBackend" . }}
+      {{- $content := include "httpd.pulpContentBackend" . }}
+
+      ProxyPass /pulp_ansible/galaxy/ {{ $api }}/pulp_ansible/galaxy/
+      ProxyPassReverse /pulp_ansible/galaxy/ {{ $api }}/pulp_ansible/galaxy/
+
+      <Location "/pulpcore_registry">
+        {{- include "httpd.pulpRemoteUser" . | trim | nindent 8 }}
+        ProxyPass {{ $api }}
+        ProxyPassReverse {{ $api }}
+      </Location>
+
+      ProxyPass /pulp/container/ {{ $content }}/pulp/container/
+      ProxyPassReverse /pulp/container/ {{ $content }}/pulp/container/
+
+      {{- include "httpd.pulpContent" . | trim | nindent 6 }}
+
+      <Location "/pulp/api/v3">
+        {{- include "httpd.pulpRemoteUser" . | trim | nindent 8 }}
+        ProxyPass {{ $api }}/pulp/api/v3 timeout=600
+        ProxyPassReverse {{ $api }}/pulp/api/v3
+      </Location>
+
+      ProxyPass /pulp/assets/ {{ $api }}/pulp/assets/
+      ProxyPassReverse /pulp/assets/ {{ $api }}/pulp/assets/
+      {{- end }}
+
+      {{- include "httpd.pub" . | trim | nindent 6 }}
+
+      {{- include "httpd.foremanProxy" . | trim | nindent 6 }}
+    </VirtualHost>
+{{- end }}

@@ -9,6 +9,10 @@ from urllib.request import Request, urlopen
 
 import pytest
 
+# Requests straight to the web Service, as httpd would send them: Foreman
+# requires HTTPS when the front door is enabled.
+WEB_HEADERS = {"Host": "foreman.test", "X-Forwarded-Proto": "https"}
+
 
 @pytest.fixture(scope="module")
 def namespace():
@@ -59,7 +63,7 @@ def test_web_deployment_is_available(kube_cluster, namespace, workload):
 
 
 def test_database_is_active(api_url):
-    request = Request(f"{api_url}/api/v2/ping", headers={"Host": "foreman.test"})
+    request = Request(f"{api_url}/api/v2/ping", headers=WEB_HEADERS)
     with urlopen(request, timeout=30) as response:
         assert response.status == 200
         payload = json.load(response)
@@ -69,7 +73,7 @@ def test_database_is_active(api_url):
 def test_seeded_admin_can_use_api(api_url):
     request = Request(
         f"{api_url}/api/v2/users?search=login%3Dadmin",
-        headers={"Host": "foreman.test", "Authorization": "Basic YWRtaW46Zm9yZW1hbi10ZXN0"},
+        headers={**WEB_HEADERS, "Authorization": "Basic YWRtaW46Zm9yZW1hbi10ZXN0"},
     )
     with urlopen(request, timeout=30) as response:
         assert response.status == 200

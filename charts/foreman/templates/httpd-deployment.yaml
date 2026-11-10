@@ -1,0 +1,113 @@
+{{- if .Values.httpd.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "httpd.fullname" . }}
+  labels:
+    {{- include "httpd.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.httpd.replicas }}
+  selector:
+    matchLabels:
+      {{- include "httpd.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "httpd.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/httpd-configmap.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 1001
+        runAsGroup: 1001
+        runAsNonRoot: true
+        runAsUser: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: httpd
+          image: {{ include "httpd.image" . }}
+          imagePullPolicy: {{ .Values.httpd.image.pullPolicy }}
+          command:
+            - httpd
+            - -DFOREGROUND
+            - -f
+            - /etc/httpd-foreman/httpd.conf
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /pub/
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: https
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.httpd.resources | nindent 12 }}
+          volumeMounts:
+            - name: configuration
+              mountPath: /etc/httpd-foreman
+              readOnly: true
+            - name: tls
+              mountPath: /etc/httpd-tls
+              readOnly: true
+            - name: pub
+              mountPath: /var/www/pub
+              readOnly: true
+            - name: temporary
+              mountPath: /tmp
+      volumes:
+        - name: configuration
+          configMap:
+            name: {{ include "httpd.fullname" . }}
+        # Server certificate and key, its CA chain, and the CA that signs the
+        # client certificates httpd accepts.
+        - name: tls
+          projected:
+            defaultMode: 0440
+            sources:
+              - secret:
+                  name: {{ include "foreman.serverTlsSecretName" . }}
+                  items:
+                    - key: tls.crt
+                      path: server.crt
+                    - key: tls.key
+                      path: server.key
+                    - key: ca.crt
+                      path: server-ca.crt
+              - secret:
+                  name: {{ include "foreman.caSecretName" . }}
+                  items:
+                    - key: {{ .Values.certificates.ca.key }}
+                      path: client-ca.crt
+        # Public download of the server CA, under the name hosts expect.
+        - name: pub
+          secret:
+            secretName: {{ include "foreman.serverTlsSecretName" . }}
+            defaultMode: 0444
+            items:
+              - key: ca.crt
+                path: katello-server-ca.crt
+        - name: temporary
+          emptyDir: {}
+{{- end }}

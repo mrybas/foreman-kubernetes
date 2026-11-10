@@ -11,8 +11,11 @@ import pytest
 # Fixtures shared with the web tests.
 from test_foreman import api_url, namespace, release, workload  # noqa: F401
 
+# Straight to the web Service, as httpd would send it: Foreman requires HTTPS
+# when the front door is enabled.
 HEADERS = {
     "Host": "foreman.test",
+    "X-Forwarded-Proto": "https",
     "Authorization": "Basic YWRtaW46Zm9yZW1hbi10ZXN0",
     "Content-Type": "application/json",
 }

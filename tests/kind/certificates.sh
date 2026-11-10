@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Generate a test CA, a Foreman client certificate and a Candlepin server
-# certificate with openssl, and store them as the Secrets the foreman Helm
-# chart reads.
+# Generate a test CA, a Foreman client certificate, a Candlepin server
+# certificate and optionally an HTTPS server certificate with openssl, and
+# store them as the Secrets the foreman Helm chart reads.
 #
-# Usage: certificates.sh NAMESPACE RELEASE CLIENT_CN
+# Usage: certificates.sh NAMESPACE RELEASE CLIENT_CN [SERVER_SAN...]
 #
 # Secrets created or updated in NAMESPACE:
 #   <release>-ca             Opaque: ca.crt
@@ -12,6 +12,8 @@
 #   <release>-candlepin-tls  kubernetes.io/tls: tls.crt, tls.key, ca.crt; SANs
 #                            the Candlepin Service name, its in-cluster DNS
 #                            names and localhost
+#   <release>-server-tls     kubernetes.io/tls: tls.crt, tls.key, ca.crt (only
+#                            with SERVER_SAN; the first SAN is also the CN)
 #
 # The Candlepin Service is named <fullname>-candlepin, as the chart names it.
 # FULLNAME defaults to the chart's <release>-foreman; set it when the release
@@ -23,14 +25,16 @@
 # kubectl context. These certificates are for tests only.
 set -euo pipefail
 
-if [[ $# -ne 3 ]]; then
-  sed -n '5p' "$0" | sed 's/^# //' >&2
+if [[ $# -lt 3 ]]; then
+  sed -n '6p' "$0" | sed 's/^# //' >&2
   exit 2
 fi
 
 namespace=$1
 release=$2
 client_cn=$3
+shift 3
+server_sans=("$@")
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 dir="${CERT_DIR:-${repo_root}/artifacts/certificates/${namespace}-${release}}"
@@ -61,6 +65,8 @@ issue() {
   {
     echo 'basicConstraints = critical, CA:FALSE'
     echo 'keyUsage = critical, digitalSignature, keyEncipherment'
+    echo 'subjectKeyIdentifier = hash'
+    echo 'authorityKeyIdentifier = keyid'
     echo "extendedKeyUsage = ${usage}"
     printf 'subjectAltName = '
     local sep=''
@@ -94,7 +100,7 @@ EOF
   openssl req -x509 -new -key "${dir}/ca.key" -config "${dir}/ca.cnf" -days "${days}" \
     -sha256 -out "${dir}/ca.crt"
   # A new CA invalidates every certificate it did not sign.
-  rm -f "${dir}"/client.names "${dir}"/candlepin.names
+  rm -f "${dir}"/client.names "${dir}"/candlepin.names "${dir}"/server.names
 fi
 
 issue client "${client_cn}" clientAuth "${client_cn}"
@@ -105,6 +111,9 @@ candlepin="${fullname:0:53}"
 candlepin="${candlepin%-}-candlepin"
 issue candlepin "${candlepin}" serverAuth "${candlepin}" "${candlepin}.${namespace}.svc" \
   "${candlepin}.${namespace}.svc.cluster.local" localhost
+if [[ ${#server_sans[@]} -gt 0 ]]; then
+  issue server "${server_sans[0]}" serverAuth "${server_sans[@]}"
+fi
 
 apply_secret() {
   kubectl "${kubectl_args[@]}" create secret generic "$@" --dry-run=client --output=yaml |
@@ -120,3 +129,8 @@ apply_secret "${release}-candlepin-ca" --type=kubernetes.io/tls \
 apply_secret "${release}-candlepin-tls" --type=kubernetes.io/tls \
   --from-file=tls.crt="${dir}/candlepin.crt" --from-file=tls.key="${dir}/candlepin.key" \
   --from-file=ca.crt="${dir}/ca.crt"
+if [[ ${#server_sans[@]} -gt 0 ]]; then
+  apply_secret "${release}-server-tls" --type=kubernetes.io/tls \
+    --from-file=tls.crt="${dir}/server.crt" --from-file=tls.key="${dir}/server.key" \
+    --from-file=ca.crt="${dir}/ca.crt"
+fi

@@ -42,10 +42,12 @@ case "${1:-}" in
       --from-literal=SECRET_KEY_BASE='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
       --from-literal=SEED_ADMIN_USER=admin --from-literal=SEED_ADMIN_PASSWORD=foreman-test \
       --dry-run=client --output=yaml | kubectl --context "${context}" apply --filename=-
-    # Test CA, Foreman client certificate (CN is the FQDN) and Candlepin
-    # server certificate.
+    # Test CA, Foreman client certificate (CN is the FQDN), Candlepin server
+    # certificate and the httpd server certificate for the FQDN and the
+    # in-cluster Service names.
     KUBE_CONTEXT="${context}" "${repo_root}/tests/kind/certificates.sh" \
-      "${namespace}" "${release}" foreman.test
+      "${namespace}" "${release}" foreman.test foreman.test "${release}-foreman-httpd" \
+      "${release}-foreman-httpd.${namespace}.svc" "${release}-foreman-httpd.${namespace}.svc.cluster.local"
     # Valkey shared by Dynflow, the Rails cache and Pulp.
     kubectl --context "${context}" --namespace "${namespace}" apply \
       --filename "${repo_root}/tests/kind/dependencies-valkey.yaml"
@@ -74,9 +76,12 @@ case "${1:-}" in
       --dry-run=client --output=yaml | kubectl --context "${context}" apply --filename=-
     helm upgrade --install "${release}" "${repo_root}/charts/foreman" \
       --kube-context "${context}" --namespace "${namespace}" \
-      --set-string foreman.fqdn=foreman.test --set-string foreman.externalUrl=http://foreman.test \
-      --set certificates.enabled=true --set dynflow.enabled=true --set pulp.enabled=true \
-      --set candlepin.enabled=true \
+      --set-string foreman.fqdn=foreman.test --set-string foreman.externalUrl=https://foreman.test \
+      --set certificates.enabled=true --set httpd.enabled=true \
+      --set 'foreman.trustedProxies={10.244.0.0/16}' \
+      --set dynflow.enabled=true --set pulp.enabled=true --set candlepin.enabled=true \
+      --set-string pulp.settings.smartProxyPulpUrl="https://${release}-foreman-httpd.${namespace}.svc" \
+      --set-string pulp.settings.contentOrigin=https://foreman.test \
       --wait --wait-for-jobs --timeout 20m
     ;;
   diagnostics)

@@ -1,0 +1,28 @@
+{{- if .Values.httpd.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "httpd.fullname" . }}
+  labels:
+    {{- include "httpd.labels" . | nindent 4 }}
+  {{- with .Values.httpd.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.httpd.service.type }}
+  {{- if and .Values.httpd.service.externalTrafficPolicy (ne .Values.httpd.service.type "ClusterIP") }}
+  externalTrafficPolicy: {{ .Values.httpd.service.externalTrafficPolicy }}
+  {{- end }}
+  selector:
+    {{- include "httpd.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+    - name: https
+      port: 443
+      targetPort: https
+      protocol: TCP
+{{- end }}

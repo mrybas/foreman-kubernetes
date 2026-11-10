@@ -29,6 +29,10 @@ foreman:
     workers: 1
     threadsMin: 5
     threadsMax: 5
+  # Extra addresses or CIDRs Foreman trusts to set X-Forwarded-For, added to
+  # 127.0.0.0/8 and ::1. Set it to the pod network range when httpd is
+  # enabled so Foreman sees the real client address.
+  trustedProxies: []
 
 # TLS certificates, read from existing Secrets. The chart does not create
 # certificates and does not need cert-manager. Create the Secrets in the
@@ -69,6 +73,14 @@ certificates:
       # trust its issuer through the certificates.ca bundle.
       secretName: ""
 
+  server:
+    # kubernetes.io/tls Secret (tls.crt, tls.key, ca.crt) with the HTTPS
+    # server certificate of the httpd front door. Default <release>-server-tls.
+    # Its subject alternative names must include foreman.fqdn, and also
+    # <fullname>-httpd.<namespace>.svc (by default
+    # <release>-foreman-httpd.<namespace>.svc) for clients inside the cluster.
+    secretName: ""
+
 # Dynflow runs Foreman background tasks in Sidekiq processes that use the
 # same image as the web pod. Enabling it also enables the foreman-tasks plugin
 # in all Foreman pods and requires Valkey or Redis (foreman.redisUrlSecretKey).
@@ -106,6 +118,48 @@ dynflow:
         memory: 512Mi
       limits:
         memory: 1Gi
+
+# HTTPS front door: an Apache httpd Deployment and a <fullname>-httpd Service
+# (ports 80 and 443) in front of Foreman. It terminates TLS, accepts optional
+# client certificates verified against the certificates.ca bundle and passes
+# them to Foreman. Requires certificates.enabled. When enabled, Foreman also
+# requires HTTPS and redirects plain HTTP requests to it.
+httpd:
+  enabled: false
+  image:
+    repository: registry.access.redhat.com/ubi10/httpd-24
+    # Image index digest (multi-arch). Takes precedence over tag when set.
+    digest: sha256:0e9fe3a115d47217ba155152b9e65a6356cab67d6cf39d44437a12a28e85fe55
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  # Extra host names httpd answers to, besides foreman.fqdn and the Service
+  # names.
+  serverAliases: []
+  # Client certificate common names (CN), besides foreman.fqdn, that Pulp
+  # accepts as its admin user.
+  pulpTrustedClientNames: []
+  service:
+    # ClusterIP, NodePort or LoadBalancer.
+    type: ClusterIP
+    annotations: {}
+    # Local keeps the client source address on NodePort and LoadBalancer
+    # Services. Empty leaves the Kubernetes default.
+    externalTrafficPolicy: ""
+  # Allow connections to the Foreman web port only from the httpd pods of this
+  # release and the helm test pod, so that other pods cannot bypass httpd and
+  # send their own client certificate or forwarding headers. Pods are matched
+  # by their labels, which anyone who can create pods in the namespace can
+  # set. Needs a network plugin that enforces NetworkPolicy. Without httpd the
+  # chart adds no policy.
+  networkPolicy:
+    enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
 
 migration:
   backoffLimit: 2

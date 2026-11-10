@@ -1,0 +1,34 @@
+{{- if and .Values.httpd.enabled .Values.httpd.networkPolicy.enabled }}
+# Foreman trusts the client certificate and forwarding headers that httpd
+# sets. Only the httpd pods of this release, and the helm test pod, may
+# connect to the Foreman web port; other components of the release do not
+# call it. Without httpd the chart adds no policy, because Foreman then trusts
+# no such headers and serves every client directly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "foreman.fullname" . }}-web
+  labels:
+    {{- include "foreman.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "foreman.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: web
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values:
+                  - httpd
+                  - test
+      ports:
+        - port: http
+          protocol: TCP
+{{- end }}

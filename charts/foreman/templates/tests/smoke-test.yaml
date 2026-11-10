@@ -24,6 +24,9 @@ spec:
         - |
           response="$(curl --fail --silent --show-error \
             --header 'Host: {{ .Values.foreman.fqdn }}' \
+            {{- if .Values.httpd.enabled }}
+            --header 'X-Forwarded-Proto: https' \
+            {{- end }}
             'http://{{ include "foreman.fullname" . }}:{{ .Values.service.port }}/api/v2/ping')"
           printf '%s\n' "${response}"
           printf '%s\n' "${response}" | grep -Eq '"active"[[:space:]]*:[[:space:]]*true'
