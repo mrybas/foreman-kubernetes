@@ -10,4 +10,4 @@ metadata:
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
     helm.sh/hook-weight: "-1"
 data:
-  {{- include "foreman.configurationData" . | nindent 2 }}
+  {{- include "foreman.configurationData" (dict "context" . "web" false) | nindent 2 }}

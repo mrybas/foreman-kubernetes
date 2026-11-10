@@ -34,18 +34,69 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s-migration-config" (include "foreman.fullname" .) }}
 {{- end }}
 
+{{/*
+ConfigMap data for Foreman. Takes a dict: context is the root context, web is
+true for the web pods, which also get the TLS client settings.
+*/}}
 {{- define "foreman.configurationData" -}}
+{{- $context := .context -}}
 database.yml: |
   production:
     url: <%= ENV.fetch('DATABASE_URL') %>
     pool: <%= Integer(ENV.fetch('FOREMAN_DATABASE_POOL')) %>
 settings.yaml: |
   ---
-  :fqdn: {{ .Values.foreman.fqdn | quote }}
-  :foreman_url: {{ .Values.foreman.externalUrl | quote }}
+  :fqdn: {{ $context.Values.foreman.fqdn | quote }}
+  :foreman_url: {{ $context.Values.foreman.externalUrl | quote }}
   :hosts:
-    - {{ .Values.foreman.fqdn | quote }}
+    - {{ $context.Values.foreman.fqdn | quote }}
   :require_ssl: false
+  {{- if and .web $context.Values.certificates.enabled }}
+  :ssl_ca_file: {{ include "foreman.certificatesPath" $context }}/ca.crt
+  :ssl_certificate: {{ include "foreman.certificatesPath" $context }}/client.crt
+  :ssl_priv_key: {{ include "foreman.certificatesPath" $context }}/client.key
+  {{- end }}
+{{- end }}
+
+{{- define "foreman.certificatesPath" -}}
+/etc/foreman/certs
+{{- end }}
+
+{{- define "foreman.caSecretName" -}}
+{{- .Values.certificates.ca.secretName | default (printf "%s-ca" .Release.Name) }}
+{{- end }}
+
+{{- define "foreman.clientTlsSecretName" -}}
+{{- .Values.certificates.client.secretName | default (printf "%s-client-tls" .Release.Name) }}
+{{- end }}
+
+{{/*
+Projected volume with the CA bundle and the client certificate and key.
+Files: ca.crt, client.crt, client.key.
+*/}}
+{{- define "foreman.certificatesVolume" -}}
+- name: certificates
+  projected:
+    defaultMode: 0440
+    sources:
+      - secret:
+          name: {{ include "foreman.caSecretName" . }}
+          items:
+            - key: {{ .Values.certificates.ca.key }}
+              path: ca.crt
+      - secret:
+          name: {{ include "foreman.clientTlsSecretName" . }}
+          items:
+            - key: tls.crt
+              path: client.crt
+            - key: tls.key
+              path: client.key
+{{- end }}
+
+{{- define "foreman.certificatesVolumeMount" -}}
+- name: certificates
+  mountPath: {{ include "foreman.certificatesPath" . }}
+  readOnly: true
 {{- end }}
 
 {{- define "foreman.env" -}}
@@ -97,6 +148,9 @@ settings.yaml: |
   readOnly: true
 - name: temporary
   mountPath: /usr/share/foreman/tmp
+{{- if .Values.certificates.enabled }}
+{{ include "foreman.certificatesVolumeMount" . }}
+{{- end }}
 {{- end }}
 
 {{- define "foreman.migrationVolumeMounts" -}}

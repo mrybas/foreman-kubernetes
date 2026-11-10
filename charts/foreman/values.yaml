@@ -25,6 +25,28 @@ foreman:
     threadsMin: 5
     threadsMax: 5
 
+# TLS certificates, read from existing Secrets. The chart does not create
+# certificates and does not need cert-manager. Create the Secrets in the
+# release namespace before installing. Empty names default to the names below,
+# where <release> is the Helm release name.
+certificates:
+  # When true, the Foreman web pods mount the CA bundle and the client
+  # certificate, and settings.yaml points ssl_ca_file, ssl_certificate and
+  # ssl_priv_key at them. Foreman uses these for HTTPS connections to Smart
+  # Proxies. The migration Job mounts neither.
+  enabled: false
+  ca:
+    # Secret holding the CA bundle Foreman trusts for outgoing HTTPS. Default
+    # <release>-ca. It may also point at a kubernetes.io/tls Secret that has a
+    # ca.crt key.
+    secretName: ""
+    key: ca.crt
+  client:
+    # kubernetes.io/tls Secret (tls.crt, tls.key) with the certificate Foreman
+    # presents as a TLS client. Default <release>-client-tls. Its CN should be
+    # the Foreman FQDN.
+    secretName: ""
+
 migration:
   backoffLimit: 2
   activeDeadlineSeconds: 1200

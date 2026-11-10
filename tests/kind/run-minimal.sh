@@ -42,9 +42,13 @@ case "${1:-}" in
       --from-literal=SECRET_KEY_BASE='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
       --from-literal=SEED_ADMIN_USER=admin --from-literal=SEED_ADMIN_PASSWORD=foreman-test \
       --dry-run=client --output=yaml | kubectl --context "${context}" apply --filename=-
+    # Test CA and Foreman client certificate (CN is the FQDN).
+    KUBE_CONTEXT="${context}" "${repo_root}/tests/kind/certificates.sh" \
+      "${namespace}" "${release}" foreman.test
     helm upgrade --install "${release}" "${repo_root}/charts/foreman" \
       --kube-context "${context}" --namespace "${namespace}" \
       --set-string foreman.fqdn=foreman.test --set-string foreman.externalUrl=http://foreman.test \
+      --set certificates.enabled=true \
       --wait --wait-for-jobs --timeout 20m
     ;;
   diagnostics)
