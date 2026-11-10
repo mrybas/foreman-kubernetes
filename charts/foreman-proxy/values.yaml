@@ -1,0 +1,284 @@
+# A Smart Proxy with content (a capsule) for a Foreman server that runs the
+# Katello plugin: its own Pulp, an httpd front door and foreman-proxy with the
+# Registration, Templates, Dynflow and Logs modules. It syncs content from the
+# Foreman server's Pulp and forwards the subscription requests (/rhsm) of its
+# hosts to the Foreman server.
+
+# Host name of the Smart Proxy, required. Hosts and the Foreman server reach it
+# by this name, on ports 443 (httpd) and 8443 (foreman-proxy) of the same
+# Service. It is the name of both Smart Proxy records in Foreman, <name> and
+# <name>-pulp, and must be in the server certificate and be the CN of the
+# client certificate in the bundle Secret.
+name: ""
+# More host names httpd and foreman-proxy answer to. Each must be in the
+# server certificate.
+serverAliases: []
+
+imagePullSecrets: []
+
+# Spread the replicas of Pulp across nodes when pulp.storage.colocate is
+# false. ScheduleAnyway makes it a preference.
+topologySpread:
+  enabled: true
+  topologyKey: kubernetes.io/hostname
+  maxSkew: 1
+  whenUnsatisfiable: ScheduleAnyway
+nameOverride: ""
+fullnameOverride: ""
+
+# Extra /etc/hosts entries for every pod of the release, in the pod
+# hostAliases format ([{ip: 192.0.2.10, hostnames: [foreman.example.test]}]).
+# Use it when the host name of foreman.url or of the Foreman server's Pulp URL
+# is not in the cluster DNS.
+hostAliases: []
+
+foreman:
+  # URL of the Foreman server, required, for example
+  # https://foreman.example.test. httpd forwards /rhsm and the other Foreman
+  # paths there, foreman-proxy calls it, and the registration Job uses its API.
+  # The server certificate behind it must be signed by server-ca.crt from the
+  # bundle Secret.
+  url: ""
+  # Client certificate common names (CN) of the Foreman server. foreman-proxy
+  # accepts calls from them and httpd maps them to the Pulp administrator, so
+  # that Katello can manage this Pulp. Empty means the host name of url, which
+  # is the CN of the client certificate the foreman chart uses.
+  clientNames: []
+
+# The identity of this Smart Proxy, in one Secret in the release namespace.
+# tools/foreman-proxy-bundle.sh builds it from the Foreman release and the
+# certificates issued for this Smart Proxy. Keys:
+#   ca.crt                  CA bundle of the Foreman server; httpd and
+#                           foreman-proxy verify client certificates with it
+#   server-ca.crt           CA of the Foreman server's HTTPS certificate,
+#                           published as /pub/katello-server-ca.crt
+#   tls.crt, tls.key        server certificate for name and serverAliases
+#   client.crt, client.key  client certificate, CN = name; presented to the
+#                           Foreman server
+#   oauth-consumer-key, oauth-consumer-secret
+#                           OAuth consumer of the Foreman server
+#                           (foreman.oauth.existingSecret of the foreman chart);
+#                           read only by the registration Job
+bundle:
+  # Default <release>-bundle.
+  secretName: ""
+
+# One Service for httpd (ports 80 and 443) and foreman-proxy (port 8443), so
+# that both answer under the same name, as Katello expects.
+service:
+  # ClusterIP, NodePort or LoadBalancer.
+  type: ClusterIP
+  # Fixed cluster IP, for example to point the Foreman server's
+  # foreman.hostAliases at it. Empty lets Kubernetes choose.
+  clusterIP: ""
+  annotations: {}
+  # Local keeps the client source address on NodePort and LoadBalancer
+  # Services. Empty leaves the Kubernetes default.
+  externalTrafficPolicy: ""
+
+httpd:
+  image:
+    repository: registry.access.redhat.com/ubi10/httpd-24
+    # Image index digest (multi-arch). Takes precedence over tag when set.
+    digest: sha256:0e9fe3a115d47217ba155152b9e65a6356cab67d6cf39d44437a12a28e85fe55
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  # Seconds httpd waits for the Foreman server on /rhsm.
+  rhsmTimeout: 180
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+proxy:
+  image:
+    repository: quay.io/foreman/foreman-proxy
+    tag: nightly
+    digest: ""
+    pullPolicy: IfNotPresent
+  logLevel: INFO
+  port: 8443
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+# After every install and upgrade a Job registers this Smart Proxy in Foreman
+# with OAuth-signed API requests: <name> (https://<name>:8443, foreman-proxy)
+# and <name>-pulp (https://<name>/pulp/api/v3/smart_proxy, Pulp in mirror
+# mode). It creates or updates both, adds organizations and locations, keeps
+# existing assignments, refreshes the features and waits until Foreman reports
+# them. Then it adds the lifecycle environments below to <name>-pulp.
+registration:
+  # Organization and location names. Empty means all that exist when the Job
+  # runs.
+  organizations: []
+  locations: []
+  # Lifecycle environment names, for example [Library], added in every
+  # organization of the Smart Proxy that has them. Hosts can use this Smart
+  # Proxy as content source only for its lifecycle environments.
+  lifecycleEnvironments: []
+  # on_demand, immediate, streamed or inherit. Empty keeps Foreman's default
+  # (the default_proxy_download_policy setting, on_demand unless changed).
+  downloadPolicy: ""
+  # Seconds the Job keeps retrying until Foreman accepts both records with
+  # all features.
+  timeoutSeconds: 600
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+# Pulp in mirror mode: it syncs the content Katello assigns to this Smart
+# Proxy from the Foreman server's Pulp. Three Deployments (api, content,
+# worker) share one content volume; a migration Job runs before every install
+# and upgrade. Settings that are not secret are rendered into
+# /etc/pulp/settings.py; credentials come from existingSecret.
+pulp:
+  image:
+    repository: quay.io/foreman/pulp
+    tag: foreman-nightly
+    digest: ""
+    pullPolicy: IfNotPresent
+  # Secret in the release namespace with the keys named below.
+  existingSecret: pulp-runtime
+  databasePasswordSecretKey: DATABASE_PASSWORD
+  # Django SECRET_KEY.
+  secretKeySecretKey: SECRET_KEY
+  # Valkey or Redis URL, for example redis://valkey:6379/8. Required: Katello
+  # treats a Pulp without it as unavailable.
+  redisUrlSecretKey: REDIS_URL
+  # Fernet key Pulp uses to encrypt database fields, created with
+  # `openssl rand -base64 32 | tr '+/' '-_'`. Keep it: data encrypted with a
+  # lost key cannot be read.
+  symmetricKeySecretKey: database_fields.symmetric.key
+  database:
+    host: postgresql
+    port: 5432
+    name: pulp
+    user: pulp
+    sslMode: disable
+  settings:
+    # Base URL hosts download content from. Default https://<name>.
+    contentOrigin: ""
+    # Pulp API URL that Pulp advertises to Foreman. Katello sends its API
+    # calls for this Smart Proxy there. Default https://<name>.
+    smartProxyPulpUrl: ""
+    # URL hosts send subscription requests to. Default https://<name>/rhsm.
+    rhsmUrl: ""
+    enabledPlugins:
+      - pulp_certguard
+      - pulp_file
+      - pulp_smart_proxy
+      - pulp_container
+      - pulp_rpm
+    # Pulp trusts the user name in this WSGI variable. HTTP_REMOTE_USER is the
+    # REMOTE-USER request header, which httpd sets for foreman.clientNames.
+    remoteUserEnvironName: HTTP_REMOTE_USER
+    logLevel: info
+    # Extra Python appended to settings.py. No secrets here.
+    extra: ""
+  api:
+    replicas: 1
+    # Gunicorn worker processes per pod.
+    workers: 2
+    resources:
+      requests:
+        cpu: 100m
+        memory: 384Mi
+      limits:
+        memory: 1Gi
+    # Only the httpd pods of this release may connect to the API, because
+    # Pulp trusts the REMOTE-USER header. Takes effect only where the network
+    # plugin enforces NetworkPolicy. Anyone who can create pods in the
+    # namespace can add the labels.
+    networkPolicy:
+      enabled: true
+      clientPodLabels:
+        app.kubernetes.io/component: httpd
+  content:
+    replicas: 1
+    workers: 2
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+  worker:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 2Gi
+  migration:
+    backoffLimit: 2
+    activeDeadlineSeconds: 1200
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+  # Containers, volumes, volume mounts and environment variables added to the
+  # Pulp API, content and worker pods and to the migration Job.
+  extraInitContainers: []
+  extraVolumes: []
+  extraVolumeMounts: []
+  extraEnv: []
+  storage:
+    # filesystem (a PersistentVolumeClaim at /var/lib/pulp) or s3 (a bucket;
+    # each Pulp pod gets an emptyDir at /var/lib/pulp for temporary files).
+    # The Pulp image must contain django-storages and boto3 for s3.
+    type: filesystem
+    s3:
+      # Required with type s3.
+      bucket: ""
+      # Leave empty for AWS S3. For other object stores the full URL.
+      endpointUrl: ""
+      region: ""
+      # path, virtual or empty for the boto3 default.
+      addressingStyle: ""
+      signatureVersion: s3v4
+      # Secret with the access key and secret key. Leave empty when the pods
+      # get credentials another way.
+      existingSecret: ""
+      accessKeySecretKey: AWS_ACCESS_KEY_ID
+      secretKeySecretKey: AWS_SECRET_ACCESS_KEY
+      # Secret with the CA bundle that signed the endpoint certificate. Empty
+      # uses the CA bundle of the Pulp image.
+      caSecret:
+        name: ""
+        key: ca.crt
+      # Set false to skip TLS verification of the endpoint. Only for tests.
+      verify: true
+      # The content app serves every file itself, so the bucket stays
+      # private and every download passes Pulp's entitlement check. Set
+      # true to answer with a redirect to a signed bucket URL instead:
+      # hosts must then reach and trust the endpoint, and anyone with the
+      # URL can download the file until the signature expires.
+      redirectToObjectStorage: false
+      # More django-storages S3 options, for example {"location": "pulp"}.
+      # Not for credentials (access_key, secret_key, security_token,
+      # session_token, session_profile): they would land in a ConfigMap, so
+      # the chart rejects them. Use existingSecret.
+      options: {}
+    # The settings below apply to type filesystem only.
+    # With existingClaim set, the chart creates no claim.
+    existingClaim: ""
+    size: 10Gi
+    # Empty uses the cluster default StorageClass.
+    storageClass: ""
+    accessMode: ReadWriteOnce
+    # Schedule content and worker pods on the node of a Pulp API pod, so they
+    # can share a ReadWriteOnce volume. Set false with ReadWriteMany storage.
+    colocate: true

@@ -1,0 +1,40 @@
+{{- /*
+One Service for httpd and foreman-proxy: Katello links the two Smart Proxy
+records by the host name of their URLs, so 443 and 8443 answer under the same
+name. The selector matches every pod of the release; a pod is an endpoint of
+a port only when it has a container port with the target name, which only
+httpd and foreman-proxy have.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "foreman-proxy.fullname" . }}
+  labels:
+    {{- include "foreman-proxy.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  {{- with .Values.service.clusterIP }}
+  clusterIP: {{ . }}
+  {{- end }}
+  {{- if and .Values.service.externalTrafficPolicy (ne .Values.service.type "ClusterIP") }}
+  externalTrafficPolicy: {{ .Values.service.externalTrafficPolicy }}
+  {{- end }}
+  selector:
+    {{- include "foreman-proxy.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: httpd-http
+      protocol: TCP
+    - name: https
+      port: 443
+      targetPort: httpd-https
+      protocol: TCP
+    - name: proxy-https
+      port: {{ .Values.proxy.port }}
+      targetPort: proxy-https
+      protocol: TCP

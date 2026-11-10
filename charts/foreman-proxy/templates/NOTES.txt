@@ -1,0 +1,9 @@
+Smart Proxy {{ .Values.name }} for {{ .Values.foreman.url }}:
+
+  Service {{ include "foreman-proxy.fullname" . }}: httpd on ports 80 and 443,
+  foreman-proxy on port {{ .Values.proxy.port }}. {{ .Values.name }} must resolve to it for hosts
+  and for the Foreman server.
+
+The Job {{ include "registration.fullname" . }}-{{ .Release.Revision }} registered the Smart Proxies
+{{ .Values.name }} and {{ .Values.name }}-pulp. Assign lifecycle environments to
+{{ .Values.name }}-pulp in Foreman and sync them to make content available here.

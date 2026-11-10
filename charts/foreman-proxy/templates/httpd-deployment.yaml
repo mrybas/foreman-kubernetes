@@ -1,0 +1,152 @@
+{{- $bundle := include "foreman-proxy.bundleSecretName" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "httpd.fullname" . }}
+  labels:
+    {{- include "foreman-proxy.componentLabels" (dict "context" . "component" "httpd") | nindent 4 }}
+spec:
+  replicas: {{ .Values.httpd.replicas }}
+  selector:
+    matchLabels:
+      {{- include "foreman-proxy.componentSelectorLabels" (dict "context" . "component" "httpd") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "foreman-proxy.componentSelectorLabels" (dict "context" . "component" "httpd") | nindent 8 }}
+      annotations:
+        {{- include "foreman-proxy.configChecksum" (include "foreman-proxy.configMapData" (list . "httpd-configmap.yaml")) | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 1001
+        runAsGroup: 1001
+        runAsNonRoot: true
+        runAsUser: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- include "foreman-proxy.hostAliases" . | nindent 6 }}
+      # SSLProxyMachineCertificateFile needs the client certificate and key in
+      # one file.
+      initContainers:
+        - name: client-certificate
+          image: {{ include "httpd.image" . }}
+          imagePullPolicy: {{ .Values.httpd.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - umask 077 && cat /etc/httpd-tls/client.crt /etc/httpd-tls/client.key > /run/httpd-client/client.pem
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/httpd-tls
+              readOnly: true
+            - name: client
+              mountPath: /run/httpd-client
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 32Mi
+      containers:
+        - name: httpd
+          image: {{ include "httpd.image" . }}
+          imagePullPolicy: {{ .Values.httpd.image.pullPolicy }}
+          command:
+            - httpd
+            - -DFOREGROUND
+            - -f
+            - /etc/httpd-foreman-proxy/httpd.conf
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          # Port names differ from the Pulp pods' "http", so that the front
+          # Service, which selects every pod of the release, only reaches
+          # httpd on 80 and 443.
+          ports:
+            - name: httpd-http
+              containerPort: 8080
+              protocol: TCP
+            - name: httpd-https
+              containerPort: 8443
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /pub/
+              port: httpd-http
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: httpd-https
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.httpd.resources | nindent 12 }}
+          volumeMounts:
+            - name: configuration
+              mountPath: /etc/httpd-foreman-proxy
+              readOnly: true
+            - name: tls
+              mountPath: /etc/httpd-tls
+              readOnly: true
+            - name: client
+              mountPath: /run/httpd-client
+              readOnly: true
+            - name: pub
+              mountPath: /var/www/pub
+              readOnly: true
+            - name: temporary
+              mountPath: /tmp
+      volumes:
+        - name: configuration
+          configMap:
+            name: {{ include "httpd.fullname" . }}
+        # Server certificate and key, the server CA (chain and the Foreman
+        # server's issuer), the CA bundle for client certificates, and this
+        # Smart Proxy's client certificate.
+        - name: tls
+          secret:
+            secretName: {{ $bundle }}
+            defaultMode: 0440
+            items:
+              - key: tls.crt
+                path: server.crt
+              - key: tls.key
+                path: server.key
+              - key: server-ca.crt
+                path: server-ca.crt
+              - key: ca.crt
+                path: client-ca.crt
+              - key: client.crt
+                path: client.crt
+              - key: client.key
+                path: client.key
+        - name: client
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        # Public download of the Foreman server CA, under the name hosts expect.
+        - name: pub
+          secret:
+            secretName: {{ $bundle }}
+            defaultMode: 0444
+            items:
+              - key: server-ca.crt
+                path: katello-server-ca.crt
+        - name: temporary
+          emptyDir: {}

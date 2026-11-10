@@ -1,0 +1,93 @@
+# Test fixture for the Smart Proxy with content (foreman-proxy chart): a
+# disposable PostgreSQL with the pulp database, in the Smart Proxy namespace.
+# No persistence, no TLS. Valkey comes from dependencies-valkey.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgresql-init
+data:
+  10-pulp.sql: |
+    CREATE USER pulp WITH PASSWORD 'pulp-test';
+    CREATE DATABASE pulp OWNER pulp;
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql
+spec:
+  selector:
+    app.kubernetes.io/name: postgresql
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgresql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgresql
+    spec:
+      # The restricted Pod Security profile: 70 is the postgres user of the
+      # Alpine image.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgresql
+          image: postgres:16-alpine
+          args:
+            - -c
+            - shared_buffers=32MB
+          ports:
+            - name: postgresql
+              containerPort: 5432
+          env:
+            - name: POSTGRES_PASSWORD
+              value: postgres-test
+            # A directory initdb creates, so it owns it.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          readinessProbe:
+            exec:
+              command:
+                # TCP only: the server that runs the init scripts listens
+                # on the socket alone.
+                - pg_isready
+                - --host=127.0.0.1
+                - --username=postgres
+            periodSeconds: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: init
+          configMap:
+            name: postgresql-init

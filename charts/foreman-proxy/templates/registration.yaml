@@ -1,0 +1,123 @@
+{{- /*
+The registration script, as a regular release resource, so that it exists
+before the post-install hook runs.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "registration.fullname" . }}
+  labels:
+    {{- include "foreman-proxy.componentLabels" (dict "context" . "component" "registration") | nindent 4 }}
+data:
+  register.rb: |
+    {{- .Files.Get "files/register.rb" | nindent 4 }}
+---
+{{- /*
+Registers both Smart Proxy records in Foreman after every install and
+upgrade, with requests signed by the OAuth consumer from the bundle Secret.
+Runs Ruby from the foreman-proxy image, which has no extra gems; the script
+uses only the standard library.
+*/}}
+{{- $bundle := include "foreman-proxy.bundleSecretName" . }}
+{{- $registration := .Values.registration }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "registration.fullname" . }}-{{ .Release.Revision }}
+  labels:
+    {{- include "foreman-proxy.componentLabels" (dict "context" . "component" "registration") | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: {{ add $registration.timeoutSeconds 120 }}
+  template:
+    metadata:
+      labels:
+        {{- include "foreman-proxy.componentSelectorLabels" (dict "context" . "component" "registration") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsGroup: 991
+        runAsNonRoot: true
+        runAsUser: 991
+        fsGroup: 991
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- include "foreman-proxy.hostAliases" . | nindent 6 }}
+      containers:
+        - name: register
+          image: {{ include "proxy.image" . }}
+          imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
+          command:
+            - ruby
+            - /etc/foreman-proxy-registration/register.rb
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          env:
+            - name: FOREMAN_URL
+              value: {{ include "foreman-proxy.foremanUrl" . | quote }}
+            - name: FOREMAN_CA_FILE
+              value: /etc/foreman-proxy-registration/tls/server-ca.crt
+            - name: OAUTH_CONSUMER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $bundle }}
+                  key: oauth-consumer-key
+            - name: OAUTH_CONSUMER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $bundle }}
+                  key: oauth-consumer-secret
+            - name: PULP_NAME
+              value: {{ printf "%s-pulp" .Values.name | quote }}
+            - name: PULP_URL
+              value: {{ printf "https://%s/pulp/api/v3/smart_proxy" .Values.name | quote }}
+            - name: PROXY_NAME
+              value: {{ .Values.name | quote }}
+            - name: PROXY_URL
+              value: {{ include "proxy.url" . | quote }}
+            - name: PROXY_FEATURES
+              value: {{ include "proxy.features" . | quote }}
+            - name: ORGANIZATIONS
+              value: {{ $registration.organizations | toJson | quote }}
+            - name: LOCATIONS
+              value: {{ $registration.locations | toJson | quote }}
+            - name: LIFECYCLE_ENVIRONMENTS
+              value: {{ $registration.lifecycleEnvironments | toJson | quote }}
+            - name: DOWNLOAD_POLICY
+              value: {{ $registration.downloadPolicy | quote }}
+            - name: TIMEOUT_SECONDS
+              value: {{ $registration.timeoutSeconds | quote }}
+          volumeMounts:
+            - name: script
+              mountPath: /etc/foreman-proxy-registration/register.rb
+              subPath: register.rb
+              readOnly: true
+            - name: tls
+              mountPath: /etc/foreman-proxy-registration/tls
+              readOnly: true
+          resources:
+            {{- toYaml $registration.resources | nindent 12 }}
+      volumes:
+        - name: script
+          configMap:
+            name: {{ include "registration.fullname" . }}
+        - name: tls
+          secret:
+            secretName: {{ $bundle }}
+            defaultMode: 0440
+            items:
+              - key: server-ca.crt
+                path: server-ca.crt

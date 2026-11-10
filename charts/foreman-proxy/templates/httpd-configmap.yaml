@@ -1,0 +1,144 @@
+{{- include "foreman-proxy.validate" . }}
+{{- $foreman := include "foreman-proxy.foremanUrl" . }}
+{{- $api := include "httpd.pulpApiBackend" . }}
+{{- $content := include "httpd.pulpContentBackend" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "httpd.fullname" . }}
+  labels:
+    {{- include "foreman-proxy.componentLabels" (dict "context" . "component" "httpd") | nindent 4 }}
+data:
+  httpd.conf: |
+    ServerRoot /etc/httpd
+    ServerName {{ .Values.name }}
+    DefaultRuntimeDir /tmp
+    PidFile /tmp/httpd.pid
+    Listen 8080
+    Listen 8443 https
+
+    LoadModule mpm_event_module modules/mod_mpm_event.so
+    LoadModule unixd_module modules/mod_unixd.so
+    LoadModule authz_core_module modules/mod_authz_core.so
+    LoadModule log_config_module modules/mod_log_config.so
+    LoadModule mime_module modules/mod_mime.so
+    LoadModule alias_module modules/mod_alias.so
+    LoadModule autoindex_module modules/mod_autoindex.so
+    LoadModule dir_module modules/mod_dir.so
+    LoadModule headers_module modules/mod_headers.so
+    LoadModule rewrite_module modules/mod_rewrite.so
+    LoadModule proxy_module modules/mod_proxy.so
+    LoadModule proxy_http_module modules/mod_proxy_http.so
+    LoadModule socache_shmcb_module modules/mod_socache_shmcb.so
+    LoadModule ssl_module modules/mod_ssl.so
+
+    ServerTokens Prod
+    ServerSignature Off
+    TraceEnable Off
+    ErrorLog /dev/stderr
+    LogLevel warn
+    LogFormat "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\"" combined
+    CustomLog /dev/stdout combined
+    TypesConfig /etc/mime.types
+    AddDefaultCharset UTF-8
+
+    <Directory />
+      AllowOverride None
+      Require all denied
+    </Directory>
+    <Directory /var/www/pub>
+      Require all granted
+    </Directory>
+
+    SSLSessionCache shmcb:/tmp/ssl_scache(512000)
+    SSLProtocol -all +TLSv1.2 +TLSv1.3
+
+    Include /etc/httpd-foreman-proxy/content.conf
+    Include /etc/httpd-foreman-proxy/content-ssl.conf
+
+  # Ported from foremanctl src/roles/httpd/templates/foreman-vhost.conf.j2
+  # (httpd_with_foreman false): content and /pub only.
+  content.conf: |
+    <VirtualHost *:8080>
+      {{- include "httpd.serverNames" . | trim | nindent 6 }}
+
+      {{- include "httpd.unsetClientHeaders" . | trim | nindent 6 }}
+      RequestHeader set X-FORWARDED-PROTO "http"
+      RequestHeader set X-FORWARDED-HOST {{ .Values.name | quote }}
+
+      {{- include "httpd.pulpContent" . | trim | nindent 6 }}
+
+      {{- include "httpd.sslProxy" . | trim | nindent 6 }}
+      {{- include "httpd.pub" (dict "context" . "scheme" "http") | trim | nindent 6 }}
+
+      ProxyRequests Off
+      ProxyPreserveHost Off
+      ProxyAddHeaders Off
+    </VirtualHost>
+
+  # Ported from foremanctl src/roles/httpd/templates/foreman-ssl-vhost.conf.j2
+  # (httpd_with_foreman false). Requests for the Foreman server go there with
+  # this Smart Proxy's client certificate, the host's certificate as
+  # X_RHSM_SSL_CLIENT_CERT and this Smart Proxy's name as X-Forwarded-Host.
+  # httpd first removes every spelling of both that a host sent, and does not
+  # add the Host header the host chose (ProxyAddHeaders Off).
+  content-ssl.conf: |
+    <VirtualHost *:8443>
+      {{- include "httpd.serverNames" . | trim | nindent 6 }}
+
+      {{- include "httpd.unsetClientHeaders" . | trim | nindent 6 }}
+      RequestHeader set X-FORWARDED-PROTO "https"
+      RequestHeader set X_RHSM_SSL_CLIENT_CERT "%{SSL_CLIENT_CERT}s"
+      RequestHeader set X-FORWARDED-HOST {{ .Values.name | quote }}
+
+      SSLEngine on
+      SSLCertificateFile /etc/httpd-tls/server.crt
+      SSLCertificateKeyFile /etc/httpd-tls/server.key
+      SSLCertificateChainFile /etc/httpd-tls/server-ca.crt
+      SSLVerifyClient optional
+      SSLVerifyDepth 3
+      SSLCACertificateFile /etc/httpd-tls/client-ca.crt
+      SSLOptions +StdEnvVars +ExportCertData
+
+      {{- include "httpd.sslProxy" . | trim | nindent 6 }}
+
+      ProxyPass /katello/api/v2/repositories/ {{ $foreman }}/katello/api/v2/repositories/
+      ProxyPassReverse /katello/api/v2/repositories/ {{ $foreman }}/katello/api/v2/repositories/
+
+      ProxyPass /pulp_ansible/galaxy/ {{ $api }}/pulp_ansible/galaxy/
+      ProxyPassReverse /pulp_ansible/galaxy/ {{ $api }}/pulp_ansible/galaxy/
+
+      <Location "/pulpcore_registry">
+        {{- include "httpd.pulpRemoteUser" . | trim | nindent 8 }}
+        ProxyPass {{ $api }}
+        ProxyPassReverse {{ $api }}
+      </Location>
+
+      ProxyPass /pulp/container/ {{ $content }}/pulp/container/
+      ProxyPassReverse /pulp/container/ {{ $content }}/pulp/container/
+
+      {{- include "httpd.pulpContent" . | trim | nindent 6 }}
+
+      <Location "/pulp/api/v3">
+        {{- include "httpd.pulpRemoteUser" . | trim | nindent 8 }}
+        ProxyPass {{ $api }}/pulp/api/v3 timeout=600
+        ProxyPassReverse {{ $api }}/pulp/api/v3
+      </Location>
+
+      {{- include "httpd.pub" (dict "context" . "scheme" "https") | trim | nindent 6 }}
+
+      ProxyPass /pulp/assets/ {{ $api }}/pulp/assets/
+      ProxyPassReverse /pulp/assets/ {{ $api }}/pulp/assets/
+
+      ProxyRequests Off
+      ProxyPreserveHost Off
+      ProxyAddHeaders Off
+      ProxyPass /rhsm {{ $foreman }}/rhsm disablereuse=on retry=0 timeout={{ .Values.httpd.rhsmTimeout | int }}
+      ProxyPassReverse /rhsm {{ $foreman }}/rhsm
+      ProxyPass /redhat_access {{ $foreman }}/redhat_access disablereuse=on retry=0 timeout=120
+      ProxyPassReverse /redhat_access {{ $foreman }}/redhat_access
+      ProxyPass /api/lightspeed {{ $foreman }}/api/lightspeed disablereuse=on retry=0
+      ProxyPassReverse /api/lightspeed {{ $foreman }}/api/lightspeed
+      ProxyPass /api/registration_commands {{ $foreman }}/api/registration_commands disablereuse=on retry=0
+      ProxyPassReverse /api/registration_commands {{ $foreman }}/api/registration_commands
+    </VirtualHost>

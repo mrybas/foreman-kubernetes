@@ -6,6 +6,11 @@ HELM_RELEASE ?= foreman
 PULP_STORAGE ?= filesystem
 KUBECONFIG := $(CURDIR)/artifacts/kubeconfig
 export KIND_CLUSTER_NAME KIND_NAMESPACE HELM_RELEASE KUBECONFIG PULP_STORAGE
+# Smart Proxy with content (foreman-proxy chart) for test-content-proxy.
+CAPSULE_NAMESPACE ?= capsule
+CAPSULE_RELEASE ?= capsule
+CAPSULE_NAME ?= capsule.test
+export CAPSULE_NAMESPACE CAPSULE_RELEASE CAPSULE_NAME
 export KIND_EXPERIMENTAL_PROVIDER ?= podman
 # Foreman images for test-upgrade. It installs UPGRADE_FROM_IMAGE_DIGEST, the
 # 5.0.1 release, and upgrades to the image that UPGRADE_TO_IMAGE_TAG points to
@@ -24,7 +29,7 @@ export KIND_CONFIG
 # Helm options test-disruption adds to the test installation.
 DISRUPTION_HELM_ARGS ?= --set replicaCount=2 --set httpd.replicas=2 --set dynflow.worker.replicas=2
 
-.PHONY: lint setup-test-env test-static setup-kind test test-backup test-upgrade test-disruption teardown-kind diagnostics
+.PHONY: lint setup-test-env test-static setup-kind test test-content-proxy test-backup test-upgrade test-disruption teardown-kind diagnostics
 lint:
 	@find . -type f -name Chart.yaml -not -path './.git/*' -exec sh -c 'for chart do helm lint "$${chart%/Chart.yaml}" || exit $$?; done' sh {} +
 
@@ -40,7 +45,13 @@ setup-kind:
 
 test:
 	tests/kind/run-minimal.sh deploy
-	$(TEST_PYTHON) -m pytest -v tests/integration -m "not backup" --junitxml=artifacts/junit.xml
+	$(TEST_PYTHON) -m pytest -v tests/integration -m "not backup and not content_proxy" --junitxml=artifacts/junit.xml
+
+# Installs the foreman-proxy chart as a Smart Proxy with content of the release
+# installed by test, in $(CAPSULE_NAMESPACE), and tests it. Run it after test.
+test-content-proxy:
+	tests/kind/run-minimal.sh deploy-content-proxy
+	$(TEST_PYTHON) -m pytest -v tests/integration -m content_proxy --junitxml=artifacts/junit-content-proxy.xml
 
 # Backs up the release installed by test, deletes its namespace and restores
 # it into $(KIND_NAMESPACE)-restore. Run it after test.
@@ -49,7 +60,7 @@ test-backup:
 
 test-upgrade:
 	tests/kind/run-minimal.sh deploy --set-string image.digest=$(UPGRADE_FROM_IMAGE_DIGEST)
-	$(TEST_PYTHON) -m pytest -v tests/upgrade tests/integration -m "not backup" --junitxml=artifacts/junit.xml
+	$(TEST_PYTHON) -m pytest -v tests/upgrade tests/integration -m "not backup and not content_proxy" --junitxml=artifacts/junit.xml
 
 test-disruption:
 	tests/kind/run-minimal.sh deploy $(DISRUPTION_HELM_ARGS)

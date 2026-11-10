@@ -22,7 +22,11 @@
 #   <release>-capsule-client-tls  kubernetes.io/tls: client certificate of a
 #                               Smart Proxy with content (capsule), only when
 #                               CAPSULE_NAMES is set (space separated DNS
-#                               names, the first is the CN)
+#                               names, the first is the CN). Its server
+#                               certificate is issued into CERT_DIR as
+#                               capsule.crt and capsule.key and not applied:
+#                               tools/foreman-proxy-bundle.sh takes both pairs
+#                               from the files
 #
 # The Candlepin Service is named <fullname>-candlepin, as the chart names it.
 # FULLNAME defaults to the chart's <release>-foreman; set it when the release
@@ -110,7 +114,8 @@ EOF
     -sha256 -out "${dir}/ca.crt"
   # A new CA invalidates every certificate it did not sign.
   rm -f "${dir}"/client.names "${dir}"/candlepin.names "${dir}"/server.names \
-    "${dir}"/proxy.names "${dir}"/proxy-client.names "${dir}"/capsule-client.names
+    "${dir}"/proxy.names "${dir}"/proxy-client.names "${dir}"/capsule-client.names \
+    "${dir}"/capsule.names
 fi
 
 issue client "${client_cn}" clientAuth "${client_cn}"
@@ -160,6 +165,7 @@ fi
 if [[ -n "${CAPSULE_NAMES:-}" ]]; then
   read -r -a capsule_names <<<"${CAPSULE_NAMES}"
   issue capsule-client "${capsule_names[0]}" clientAuth "${capsule_names[@]}"
+  issue capsule "${capsule_names[0]}" serverAuth "${capsule_names[@]}"
   apply_secret "${release}-capsule-client-tls" --type=kubernetes.io/tls \
     --from-file=tls.crt="${dir}/capsule-client.crt" --from-file=tls.key="${dir}/capsule-client.key" \
     --from-file=ca.crt="${dir}/ca.crt"

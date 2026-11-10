@@ -1,0 +1,62 @@
+{{- /*
+Settings ported from foremanctl src/roles/foreman_proxy for a Smart Proxy with
+content. The image ships every module in settings.d with :enabled: false; the
+files below turn on the ones this chart uses. Logs go to stdout instead of the
+journal.
+*/}}
+{{- $tls := include "proxy.tlsPath" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "proxy.fullname" . }}
+  labels:
+    {{- include "foreman-proxy.componentLabels" (dict "context" . "component" "proxy") | nindent 4 }}
+data:
+  settings.yml: |
+    ---
+    :settings_directory: /etc/foreman-proxy/settings.d
+    :foreman_url: {{ include "foreman-proxy.foremanUrl" . | quote }}
+    # Host names accepted in the HTTP Host header.
+    :permitted_hosts:
+      {{- range prepend .Values.serverAliases .Values.name }}
+      - {{ . | quote }}
+      {{- end }}
+    # Client certificate names allowed to call the proxy: the Foreman server.
+    :trusted_hosts:
+      {{- range (include "foreman-proxy.foremanClientNames" . | fromJsonArray) }}
+      - {{ . | quote }}
+      {{- end }}
+    :https_port: {{ .Values.proxy.port }}
+    :ssl_ca_file: {{ $tls }}/ca.crt
+    :ssl_certificate: {{ $tls }}/server.crt
+    :ssl_private_key: {{ $tls }}/server.key
+    # Calls to the Foreman server: verified against its server CA, with this
+    # Smart Proxy's client certificate, which Foreman matches with the host
+    # name of the registered proxy URL.
+    :foreman_ssl_ca: {{ $tls }}/server-ca.crt
+    :foreman_ssl_cert: {{ $tls }}/client.crt
+    :foreman_ssl_key: {{ $tls }}/client.key
+    :bind_host: '*'
+    :log_level: {{ .Values.proxy.logLevel | upper | quote }}
+    :log_file: STDOUT
+    :log_buffer: 2000
+    :log_buffer_errors: 1000
+  logs.yml: |
+    ---
+    :enabled: https
+  dynflow.yml: |
+    ---
+    :enabled: https
+    # Empty: plans are kept in memory, as in foremanctl.
+    :database:
+  # Hosts call /register on this proxy; it forwards the request to the
+  # Foreman server with its client certificate.
+  registration.yml: |
+    ---
+    :enabled: https
+    :registration_url: {{ include "proxy.url" . | quote }}
+  # Required by registration.
+  templates.yml: |
+    ---
+    :enabled: https
+    :template_url: {{ include "proxy.url" . | quote }}

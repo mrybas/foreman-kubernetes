@@ -45,7 +45,7 @@ This runs `helm lint` on each chart in the repository. CI's **Chart Lint** job
 runs the same `make lint` command.
 
 Run `make setup-test-env` and `make test-static` to check the rendered
-`foreman` Helm chart with pytest, without a cluster. CI's **Chart Static Tests**
+`foreman` and `foreman-proxy` Helm charts with pytest, without a cluster. CI's **Chart Static Tests**
 job runs the same targets.
 
 The first runnable milestone installs core Foreman with a disposable PostgreSQL

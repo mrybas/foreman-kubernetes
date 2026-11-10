@@ -1,0 +1,117 @@
+{{- $tls := include "proxy.tlsPath" . }}
+{{- $modules := list "logs" "dynflow" "registration" "templates" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "proxy.fullname" . }}
+  labels:
+    {{- include "foreman-proxy.componentLabels" (dict "context" . "component" "proxy") | nindent 4 }}
+spec:
+  # Dynflow keeps the proxy's running jobs in memory, so two pods would split
+  # the jobs between them.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "foreman-proxy.componentSelectorLabels" (dict "context" . "component" "proxy") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "foreman-proxy.componentSelectorLabels" (dict "context" . "component" "proxy") | nindent 8 }}
+      annotations:
+        {{- include "foreman-proxy.configChecksum" (include "foreman-proxy.configMapData" (list . "proxy-configmap.yaml")) | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 991
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 991
+        runAsNonRoot: true
+        runAsUser: 991
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- include "foreman-proxy.hostAliases" . | nindent 6 }}
+      containers:
+        - name: foreman-proxy
+          image: {{ include "proxy.image" . }}
+          imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
+          command:
+            - /usr/share/foreman-proxy/bin/smart-proxy
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            runAsGroup: 991
+            runAsUser: 991
+          env:
+            # Bundler loads only the optional plugins named here, so empty
+            # loads none (Remote Execution, Ansible, container gateway).
+            - name: FOREMAN_PROXY_ENABLED_PLUGINS
+              value: ""
+          ports:
+            - name: proxy-https
+              containerPort: {{ .Values.proxy.port }}
+              protocol: TCP
+          volumeMounts:
+            - name: configuration
+              mountPath: /etc/foreman-proxy/settings.yml
+              subPath: settings.yml
+              readOnly: true
+            {{- range $modules }}
+            - name: configuration
+              mountPath: /etc/foreman-proxy/settings.d/{{ . }}.yml
+              subPath: {{ . }}.yml
+              readOnly: true
+            {{- end }}
+            - name: tls
+              mountPath: {{ $tls }}
+              readOnly: true
+          # /features needs no client certificate. A TCP probe would log an
+          # SSL error on every check.
+          {{- $probe := dict "path" "/features" "port" "proxy-https" "scheme" "HTTPS" "httpHeaders" (list (dict "name" "Host" "value" .Values.name)) }}
+          startupProbe:
+            httpGet:
+              {{- toYaml $probe | nindent 14 }}
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              {{- toYaml $probe | nindent 14 }}
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              {{- toYaml $probe | nindent 14 }}
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.proxy.resources | nindent 12 }}
+      volumes:
+        - name: configuration
+          configMap:
+            name: {{ include "proxy.fullname" . }}
+        - name: tls
+          secret:
+            secretName: {{ include "foreman-proxy.bundleSecretName" . }}
+            defaultMode: 0440
+            items:
+              - key: ca.crt
+                path: ca.crt
+              - key: server-ca.crt
+                path: server-ca.crt
+              - key: tls.crt
+                path: server.crt
+              - key: tls.key
+                path: server.key
+              - key: client.crt
+                path: client.crt
+              - key: client.key
+                path: client.key

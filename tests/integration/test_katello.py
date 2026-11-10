@@ -99,8 +99,8 @@ def test_ping_reports_all_services_ok(api):
 
 def test_pulp_is_registered_as_smart_proxy(api, namespace, release):  # noqa: F811
     proxies = api.get("/api/v2/smart_proxies?search=" + quote("feature = Pulpcore"))["results"]
-    assert [proxy["name"] for proxy in proxies] == [f"{FQDN}-pulp"]
-    (proxy,) = proxies
+    # Smart Proxies with content (make test-content-proxy) have the feature too.
+    (proxy,) = [proxy for proxy in proxies if proxy["name"] == f"{FQDN}-pulp"]
     assert proxy["url"] == f"https://{release}-foreman-httpd.{namespace}.svc/pulp/api/v3/smart_proxy"
     detail = api.get(f"/api/v2/smart_proxies/{proxy['id']}")
     (pulp,) = [f for f in detail["features"] if f["name"] == "Pulpcore"]

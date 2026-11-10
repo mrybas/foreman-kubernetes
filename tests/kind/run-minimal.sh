@@ -6,6 +6,12 @@ cluster_name="${KIND_CLUSTER_NAME:-foreman-minimal}"
 node_image="${KIND_NODE_IMAGE:-kindest/node:v1.34.11@sha256:44e222ee2132dab25ff87301682f89eb82c7880ea3a1bf543bfe9708fd08d67d}"
 namespace="${KIND_NAMESPACE:-foreman}"
 release="${HELM_RELEASE:-foreman}"
+# Smart Proxy with content (deploy-content-proxy): its namespace, release,
+# host name and the fixed address of its Service in Kind's Service range.
+capsule_namespace="${CAPSULE_NAMESPACE:-capsule}"
+capsule_release="${CAPSULE_RELEASE:-capsule}"
+capsule_name="${CAPSULE_NAME:-capsule.test}"
+capsule_cluster_ip="${CAPSULE_CLUSTER_IP:-10.96.0.81}"
 context="kind-${cluster_name}"
 export KIND_EXPERIMENTAL_PROVIDER="${KIND_EXPERIMENTAL_PROVIDER:-podman}"
 export KUBECONFIG="${repo_root}/artifacts/kubeconfig"
@@ -61,9 +67,10 @@ case "${1:-}" in
     # certificate, the httpd server certificate for the FQDN and the
     # in-cluster Service names, the Smart Proxy server and client
     # certificates for the proxy pod's DNS name, and the client certificate
-    # of a Smart Proxy with content (capsule.test) that httpd trusts.
+    # of a Smart Proxy with content (capsule.test) that httpd trusts, and its
+    # server certificate (files only, for deploy-content-proxy).
     PROXY_SANS="proxy.${release}-foreman-proxy.${namespace}.svc.cluster.local" \
-      CAPSULE_NAMES=capsule.test \
+      CAPSULE_NAMES="${capsule_name}" \
       KUBE_CONTEXT="${context}" "${repo_root}/tests/kind/certificates.sh" \
       "${namespace}" "${release}" foreman.test foreman.test "${release}-foreman-httpd" \
       "${release}-foreman-httpd.${namespace}.svc" "${release}-foreman-httpd.${namespace}.svc.cluster.local"
@@ -105,7 +112,8 @@ case "${1:-}" in
     # Yum repository the Katello tests sync, served inside the cluster.
     KUBE_CONTEXT="${context}" "${repo_root}/tests/kind/rpm-repository.sh" "${namespace}"
     # A fixed httpd Service address in Kind's Service range (10.96.0.0/16),
-    # so the Foreman pods resolve the public name foreman.test to httpd.
+    # so the Foreman pods resolve the public name foreman.test to httpd, and
+    # the Smart Proxy with content to its Service.
     httpd_cluster_ip="${HTTPD_CLUSTER_IP:-10.96.0.80}"
     # PULP_STORAGE=s3: Pulp content in a MinIO bucket instead of a volume.
     storage_values=()
@@ -127,12 +135,48 @@ case "${1:-}" in
       --set 'foreman.trustedProxies={10.244.0.0/16}' \
       --set dynflow.enabled=true --set pulp.enabled=true --set candlepin.enabled=true \
       --set katello.enabled=true --set proxy.enabled=true \
-      --set 'httpd.trustedProxyClientNames={capsule.test}' --set foreman.oauth.existingSecret=foreman-oauth \
+      --set "httpd.trustedProxyClientNames={${capsule_name}}" --set foreman.oauth.existingSecret=foreman-oauth \
       --set-string httpd.service.clusterIP="${httpd_cluster_ip}" \
       --set-string "foreman.hostAliases[0].ip=${httpd_cluster_ip}" --set 'foreman.hostAliases[0].hostnames={foreman.test}' \
+      --set-string "foreman.hostAliases[1].ip=${capsule_cluster_ip}" \
+      --set "foreman.hostAliases[1].hostnames={${capsule_name}}" \
       --set-string pulp.settings.smartProxyPulpUrl="https://${release}-foreman-httpd.${namespace}.svc" \
       --set-string pulp.settings.contentOrigin=https://foreman.test \
       ${storage_values[@]+"${storage_values[@]}"} --wait --wait-for-jobs --timeout 30m "${@:2}"
+    ;;
+  deploy-content-proxy)
+    # A Smart Proxy with content (foreman-proxy chart) for the release that
+    # deploy installed, in its own namespace, named capsule_name.
+    require_cluster
+    kubectl --context "${context}" create namespace "${capsule_namespace}" \
+      --dry-run=client --output=yaml | kubectl --context "${context}" apply --filename=-
+    kubectl --context "${context}" label namespace "${capsule_namespace}" --overwrite \
+      pod-security.kubernetes.io/enforce=restricted pod-security.kubernetes.io/warn=restricted
+    kubectl --context "${context}" --namespace "${capsule_namespace}" apply \
+      --filename "${repo_root}/tests/kind/dependencies-content-proxy.yaml" \
+      --filename "${repo_root}/tests/kind/dependencies-valkey.yaml"
+    kubectl --context "${context}" --namespace "${capsule_namespace}" create secret generic pulp-runtime \
+      --from-literal=DATABASE_PASSWORD=pulp-test --from-literal=REDIS_URL=redis://valkey:6379/8 \
+      --from-literal=SECRET_KEY='fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210' \
+      --from-literal=database_fields.symmetric.key='Yk2vC4m8ZXH0g7Qb3xN1rT6uW9aL5sD2fJ8hK0pE4cI=' \
+      --dry-run=client --output=yaml | kubectl --context "${context}" apply --filename=-
+    # The identity: CA bundle, server CA and OAuth consumer of the foreman
+    # release, and the certificates deploy issued for capsule_name.
+    certificates="${CERT_DIR:-${repo_root}/artifacts/certificates/${namespace}-${release}}"
+    "${repo_root}/tools/foreman-proxy-bundle.sh" --context "${context}" \
+      --namespace "${namespace}" --release "${release}" \
+      --server-cert "${certificates}/capsule.crt" --server-key "${certificates}/capsule.key" \
+      --client-cert "${certificates}/capsule-client.crt" --client-key "${certificates}/capsule-client.key" \
+      --secret "${capsule_release}-bundle" --apply "${capsule_namespace}" "${capsule_name}"
+    kubectl --context "${context}" --namespace "${capsule_namespace}" rollout status deployment/postgresql --timeout=180s
+    kubectl --context "${context}" --namespace "${capsule_namespace}" rollout status deployment/valkey --timeout=180s
+    helm upgrade --install "${capsule_release}" "${repo_root}/charts/foreman-proxy" \
+      --kube-context "${context}" --namespace "${capsule_namespace}" \
+      --set-string name="${capsule_name}" --set-string foreman.url=https://foreman.test \
+      --set-string service.clusterIP="${capsule_cluster_ip}" \
+      --set-string "hostAliases[0].ip=${HTTPD_CLUSTER_IP:-10.96.0.80}" --set 'hostAliases[0].hostnames={foreman.test}' \
+      --set 'registration.lifecycleEnvironments={Library}' \
+      --wait --wait-for-jobs --timeout 20m "${@:2}"
     ;;
   diagnostics)
     require_cluster
@@ -140,6 +184,12 @@ case "${1:-}" in
     kubectl --context "${context}" --namespace "${namespace}" get events --sort-by=.lastTimestamp
     kubectl --context "${context}" --namespace "${namespace}" logs \
       --selector "app.kubernetes.io/instance=${release}" --all-containers --tail=100 --prefix
+    if kubectl --context "${context}" get namespace "${capsule_namespace}" >/dev/null 2>&1; then
+      kubectl --context "${context}" --namespace "${capsule_namespace}" get deployments,pods,services,jobs
+      kubectl --context "${context}" --namespace "${capsule_namespace}" get events --sort-by=.lastTimestamp
+      kubectl --context "${context}" --namespace "${capsule_namespace}" logs \
+        --selector "app.kubernetes.io/instance=${capsule_release}" --all-containers --tail=100 --prefix
+    fi
     ;;
   teardown)
     if [[ -f "${ownership_file}" ]]; then
@@ -149,7 +199,7 @@ case "${1:-}" in
     fi
     ;;
   *)
-    echo 'Usage: run-minimal.sh {setup|deploy [helm option ...]|diagnostics|teardown}' >&2
+    echo 'Usage: run-minimal.sh {setup|deploy [helm option ...]|deploy-content-proxy [helm option ...]|diagnostics|teardown}' >&2
     exit 2
     ;;
 esac

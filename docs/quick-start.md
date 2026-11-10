@@ -3,8 +3,9 @@
 This experimental, unsupported milestone installs a single core Foreman web pod
 backed by PostgreSQL. Optionally it adds Dynflow with the Foreman Tasks plugin
 for background tasks, Pulp, Candlepin, an HTTPS front door, the Katello
-plugin, and a Smart Proxy for Remote Execution and Ansible. It does not enable
-other Smart Proxy features, high availability, or production ingress.
+plugin, and a Smart Proxy for Remote Execution and Ansible. A second chart,
+`foreman-proxy`, adds a [Smart Proxy with content](#smart-proxy-with-content).
+Neither enables high availability or production ingress.
 
 ## Dependencies
 
@@ -42,7 +43,8 @@ Helm waits for the migration Jobs, the ready Deployments and the Jobs that
 register Pulp and the Smart Proxy in Foreman.
 Then [pytest-helm-charts](https://github.com/giantswarm/pytest-helm-charts) connects
 to that cluster and runs the 68 tests in `tests/integration` that are not
-marked `backup` (see [Back up and restore](#back-up-and-restore)); the 6 tests
+marked `backup` (see [Back up and restore](#back-up-and-restore)) or
+`content_proxy` (see [Smart Proxy with content](#smart-proxy-with-content)); the 6 tests
 for [Pulp content in S3](#store-pulp-content-in-s3) are skipped unless
 `PULP_STORAGE=s3`. For Foreman:
 the web Deployment is available, the API reports an active database, the seeded
@@ -418,8 +420,10 @@ machine that runs the tests and serves it inside the cluster at
 ## Prepare for Smart Proxies with content
 
 A Smart Proxy with content (a capsule) runs its own Pulp, syncs content from
-this server and forwards the `/rhsm` requests of its hosts here. The `foreman`
-Helm chart does not deploy one. It has the settings a capsule needs:
+this server and forwards the `/rhsm` requests of its hosts here. The
+`foreman-proxy` Helm chart deploys one, see
+[Smart Proxy with content](#smart-proxy-with-content). The `foreman` Helm
+chart has the settings a capsule needs:
 
 - `httpd.trustedProxyClientNames`: client certificate CNs of capsules. A
   capsule forwards a host's certificate as `X_RHSM_SSL_CLIENT_CERT`, which is
@@ -528,6 +532,142 @@ Katello it requests the Pulp status instead, and then deletes the Candlepin
 pod while a second pod requests `/api/v2/ping` and `/rhsm/status`. The Pulp and
 Candlepin results are written to `artifacts/disruption-report.json`, not
 asserted.
+
+## Smart Proxy with content
+
+The `foreman-proxy` Helm chart in `charts/foreman-proxy` deploys a Smart Proxy
+with content, also called a capsule, as its own release. It serves content and
+registration to hosts for a Foreman server with the Katello plugin that the
+`foreman` Helm chart installed. A release runs:
+
+- Pulp in mirror mode: API, content app and worker Deployments and a migration
+  Job, with the same `pulp.storage` choices as in [Enable Pulp](#enable-pulp)
+  (a volume or an S3 bucket)
+- httpd on ports 80 and 443: content under `/pulp/content`, the Foreman
+  server's CA under `/pub`, the Pulp API for Katello, and `/rhsm`,
+  `/api/registration_commands` and three more paths forwarded to the Foreman
+  server
+- foreman-proxy on port 8443 with the Registration, Templates, Dynflow and
+  Logs modules. It does not load Remote Execution, Ansible or the container
+  gateway
+
+One Service carries ports 80, 443 and 8443, so that all three answer under one
+host name, the `name` value. Katello pairs the two Smart Proxy records of a
+capsule by the host name of their URLs. Hosts and the Foreman server must
+resolve `name` to that Service.
+
+Pulp needs its own PostgreSQL database, Valkey or Redis, and a Secret, default
+`pulp-runtime`, with the keys from [Enable Pulp](#enable-pulp). Pulp reports
+its Valkey connection in its status, and Katello treats a Pulp without one as
+unavailable.
+
+### Identity bundle
+
+The release reads its identity from one Secret, default `<release>-bundle`. It
+is the Kubernetes form of the auth bundle that `foremanctl` builds for a
+Smart Proxy:
+
+| Key | Contents |
+| --- | --- |
+| `ca.crt` | CA bundle of the Foreman server; httpd and foreman-proxy verify client certificates with it |
+| `server-ca.crt` | CA of the Foreman server's HTTPS certificate; httpd and foreman-proxy verify the Foreman server with it, and hosts download it from `/pub/katello-server-ca.crt` |
+| `tls.crt`, `tls.key` | Server certificate of the capsule; its SANs must include `name` and `serverAliases`, and `server-ca.crt` must sign it |
+| `client.crt`, `client.key` | Client certificate of the capsule; its CN must be `name`, and the Foreman server's CA bundle must sign it |
+| `oauth-consumer-key`, `oauth-consumer-secret` | OAuth consumer of the Foreman server, read only by the registration Job |
+
+`tools/foreman-proxy-bundle.sh` reads the CA bundle, the server CA and the
+OAuth consumer from a `foreman` release, takes the capsule certificates from
+files, checks that they fit together and creates the Secret. It never prints
+the Secret:
+
+```console
+tools/foreman-proxy-bundle.sh --namespace foreman --release foreman \
+  --server-cert capsule.crt --server-key capsule.key \
+  --client-cert capsule-client.crt --client-key capsule-client.key \
+  --secret capsule-bundle --apply capsule capsule.example.test
+```
+
+Use `--context` and `--apply-context` when the two releases are in different
+clusters, or `--output FILE` to write the manifest instead.
+
+The `foreman` release must have the settings from
+[Prepare for Smart Proxies with content](#prepare-for-smart-proxies-with-content):
+`foreman.oauth.existingSecret`, `name` in `httpd.trustedProxyClientNames`, and
+`name` resolvable from its pods. The capsule's Pulp downloads content from the
+Pulp URL that the Foreman server's Pulp advertises
+(`pulp.settings.smartProxyPulpUrl` of the `foreman` release), so that URL must
+work from the capsule's pods. `hostAliases` adds `/etc/hosts` entries to every
+pod of the capsule release when names are not in DNS.
+
+### Install
+
+```console
+helm install capsule charts/foreman-proxy --namespace capsule \
+  --set name=capsule.example.test --set foreman.url=https://foreman.example.test \
+  --set 'registration.lifecycleEnvironments={Library}'
+```
+
+After every install and upgrade a Job registers two Smart Proxy records in
+Foreman with requests signed by the OAuth consumer, as `foremanctl` does:
+`<name>` with the URL `https://<name>:8443` and `<name>-pulp` with the URL
+`https://<name>/pulp/api/v3/smart_proxy`. It creates or updates both, adds the
+organizations and locations in `registration.organizations` and
+`registration.locations` (all that exist, when empty) to the ones already
+assigned, refreshes their features and waits until Foreman lists Registration,
+Templates, Dynflow and Logs, and Pulpcore. Then it adds the lifecycle
+environments named in `registration.lifecycleEnvironments` to `<name>-pulp` in
+each of its organizations, and sets `registration.downloadPolicy` when it is
+not empty. Organizations created later need another `helm upgrade` or an
+assignment in Foreman.
+
+### Content and hosts
+
+Sync the assigned lifecycle environments to the capsule in Foreman, or with
+`POST /katello/api/capsules/<id>/content/sync`, where `<id>` is the
+`<name>-pulp` record. With the `on_demand` download policy, the default, a sync
+copies only metadata. The first request for a package makes the capsule's
+Pulp fetch it from the Foreman server, send it to the host and keep it; later
+requests are served from the capsule's storage.
+
+To register a host through the capsule, select the `<name>` Smart Proxy in
+Global Registration. The host fetches the registration script from
+`https://<name>:8443/register`, which foreman-proxy forwards to the Foreman
+server with its client certificate. The script points subscription-manager at
+`https://<name>/rhsm` and the content at `https://<name>/pulp/content/`.
+
+httpd forwards `/rhsm` to `foreman.url` with the capsule's client
+certificate. It sends the host's certificate as `X_RHSM_SSL_CLIENT_CERT` and
+`name` as `X-Forwarded-Host`, from which the Foreman server records the
+capsule as the host's registration proxy and content source. Before that,
+httpd removes every `-`/`_` spelling of these headers that a host sent, and of
+`REMOTE-USER`, `SSL-CLIENT-*`, `X-CLIENT-CERT`, `X-Forwarded-*`, `Forwarded`
+and `Client-IP`. It does not pass on the `Host` header the host chose.
+
+The Foreman server calls foreman-proxy on port 8443 and the Pulp API on port
+443 with its client certificate. foreman-proxy accepts and httpd maps to the
+Pulp administrator only the names in `foreman.clientNames`, by default the
+host name of `foreman.url`. As in the `foreman` chart, a NetworkPolicy lets
+only the httpd pods of the release connect to the Pulp API.
+
+`make test-content-proxy`, after `make test`, issues the capsule certificates
+from the test CA, builds the bundle, installs the chart as `capsule.test` in
+the namespace `capsule` of the same Kind cluster, with the restricted Pod
+Security profile enforced, with its own PostgreSQL and Valkey, and runs the 12 tests in `tests/integration` marked
+`content_proxy`. They check that the Service sends each port only to its pods,
+that both records exist with their features and Default Organization's
+Library, that `/pub` serves the server CA and the consumer script, and that a
+second `helm upgrade` adds a new organization and its Library without
+duplicate records. With a repository synced to the capsule, they fetch the
+registration script through port 8443 and check that it points at the
+capsule, register a host through the capsule's `/rhsm` while sending a
+forged `X-Forwarded-Host`, and check that Foreman records the capsule as the
+host's registration proxy and content source. The host's certificate
+authenticates it through the capsule, while the same certificate sent as a
+header in any spelling does not. A package downloads from the capsule with the
+host's entitlement certificate and not without it, matches the copy on the
+Foreman server, is fetched from the Foreman server once and stays in the
+capsule's Pulp, and still downloads while the Foreman server's httpd is scaled
+to zero.
 
 ## Upgrade
 

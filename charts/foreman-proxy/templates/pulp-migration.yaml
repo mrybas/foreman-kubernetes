@@ -1,0 +1,69 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "pulp.fullname" . }}-migrate-{{ .Release.Revision }}
+  labels:
+    {{- include "pulp.labels" (dict "context" . "component" "pulp-migration") | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    helm.sh/hook-weight: "0"
+spec:
+  backoffLimit: {{ .Values.pulp.migration.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.pulp.migration.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "pulp.selectorLabels" (dict "context" . "component" "pulp-migration") | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "pulp.podSecurityContext" . | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.pulp.extraInitContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: {{ include "pulp.image" . }}
+          imagePullPolicy: {{ .Values.pulp.image.pullPolicy }}
+          # The content volume is a release resource and does not exist yet
+          # on install, so the Job gets the directories Django checks on an
+          # emptyDir. reset-admin-password creates the admin user that the
+          # front door maps to; Pulp accepts no passwords, so its random
+          # password is discarded.
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              mkdir -p {{ include "pulp.storageDirectories" . }}
+              pulpcore-manager migrate --noinput
+              pulpcore-manager reset-admin-password --random >/dev/null
+          securityContext:
+            {{- include "pulp.securityContext" . | nindent 12 }}
+          env:
+            {{- include "pulp.env" . | nindent 12 }}
+            {{- with .Values.pulp.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            {{- include "pulp.configVolumeMount" . | nindent 12 }}
+            - name: storage
+              mountPath: /var/lib/pulp
+            {{- with .Values.pulp.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.pulp.migration.resources | nindent 12 }}
+      volumes:
+        {{- include "pulp.configVolume" (dict "context" . "configMap" (printf "%s-migration-config" (include "pulp.fullname" .))) | nindent 8 }}
+        - name: storage
+          emptyDir: {}
+        {{- with .Values.pulp.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
