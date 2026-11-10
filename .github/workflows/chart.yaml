@@ -49,7 +49,7 @@ jobs:
   test:
     name: Foreman Installation
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
@@ -69,6 +69,8 @@ jobs:
         run: sudo --preserve-env=PATH make setup-kind
       - name: Test Foreman installation
         run: sudo --preserve-env=PATH make test
+      - name: Test backup and restore
+        run: sudo --preserve-env=PATH make test-backup
       - name: Installation diagnostics
         if: failure()
         run: sudo --preserve-env=PATH make diagnostics
@@ -80,7 +82,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: foreman-test-results
-          path: artifacts/junit.xml
+          path: |
+            artifacts/junit.xml
+            artifacts/junit-backup.xml
           if-no-files-found: warn
 
   upgrade:

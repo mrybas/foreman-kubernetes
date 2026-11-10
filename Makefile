@@ -16,7 +16,7 @@ UPGRADE_TO_IMAGE_TAG ?= nightly
 UPGRADE_TO_IMAGE_DIGEST ?=
 export UPGRADE_FROM_IMAGE_DIGEST UPGRADE_TO_IMAGE_TAG UPGRADE_TO_IMAGE_DIGEST
 
-.PHONY: lint setup-test-env test-static setup-kind test test-upgrade teardown-kind diagnostics
+.PHONY: lint setup-test-env test-static setup-kind test test-backup test-upgrade teardown-kind diagnostics
 lint:
 	@find . -type f -name Chart.yaml -not -path './.git/*' -exec sh -c 'for chart do helm lint "$${chart%/Chart.yaml}" || exit $$?; done' sh {} +
 
@@ -32,11 +32,16 @@ setup-kind:
 
 test:
 	tests/kind/run-minimal.sh deploy
-	$(TEST_PYTHON) -m pytest -v tests/integration --junitxml=artifacts/junit.xml
+	$(TEST_PYTHON) -m pytest -v tests/integration -m "not backup" --junitxml=artifacts/junit.xml
+
+# Backs up the release installed by test, deletes its namespace and restores
+# it into $(KIND_NAMESPACE)-restore. Run it after test.
+test-backup:
+	$(TEST_PYTHON) -m pytest -v tests/integration -m backup --junitxml=artifacts/junit-backup.xml
 
 test-upgrade:
 	tests/kind/run-minimal.sh deploy --set-string image.digest=$(UPGRADE_FROM_IMAGE_DIGEST)
-	$(TEST_PYTHON) -m pytest -v tests/upgrade tests/integration --junitxml=artifacts/junit.xml
+	$(TEST_PYTHON) -m pytest -v tests/upgrade tests/integration -m "not backup" --junitxml=artifacts/junit.xml
 
 diagnostics:
 	tests/kind/run-minimal.sh diagnostics

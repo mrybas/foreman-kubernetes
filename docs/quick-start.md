@@ -41,8 +41,9 @@ front door, Dynflow, Pulp, Candlepin, Katello and the Smart Proxy enabled.
 Helm waits for the migration Jobs, the ready Deployments and the Jobs that
 register Pulp and the Smart Proxy in Foreman.
 Then [pytest-helm-charts](https://github.com/giantswarm/pytest-helm-charts) connects
-to that cluster and runs the 55 tests in `tests/integration`. For Foreman: the web
-Deployment is available, the API reports an active database, the seeded
+to that cluster and runs the 55 tests in `tests/integration` that are not
+marked `backup` (see [Back up and restore](#back-up-and-restore)). For Foreman:
+the web Deployment is available, the API reports an active database, the seeded
 administrator can query the users API, the web pod has the CA bundle from its
 Secret, and the `foreman` user in the web pod can read the client key and verify
 the client certificate against the CA bundle. The Dynflow tests are described in
@@ -400,7 +401,7 @@ migrations: it reapplies the old manifests but does not run migrations or
 restore the databases. `--rollback-on-failure` does the same automatically:
 after a failed migration it adds a `Rollback to <n>` revision and leaves the
 running pods alone. Restore the databases from a backup if you need the old
-schema.
+schema (see [Back up and restore](#back-up-and-restore)).
 
 `make test-upgrade`, run in a cluster created by `make setup-kind`, installs
 the chart with the Foreman 5.0.1 release image (`UPGRADE_FROM_IMAGE_DIGEST`)
@@ -423,8 +424,107 @@ upgrade. Then they change `foreman.externalUrl` only, which Foreman reads
 from `settings.yaml` as the `foreman_url` setting: the Foreman web and Dynflow
 pods must be replaced and report the new value, every other pod must stay,
 and a second upgrade restores the value. Finally the tests in
-`tests/integration` run against the upgraded release. Helm output of each upgrade is written to `artifacts/upgrade/`.
+`tests/integration` that are not marked `backup` run against the upgraded
+release. Helm output of each upgrade is written to `artifacts/upgrade/`.
 CI runs `make test-upgrade` as a separate job in a new cluster.
+
+## Back up and restore
+
+`tools/backup.sh` copies a release to a directory on the machine that runs it.
+`tools/restore.sh` installs that copy into a namespace that does not have the
+release, for example after the namespace or the cluster was lost. The scripts
+follow `foremanctl backup` and `foremanctl restore`. They need kubectl, Helm 4
+and jq, and run their database and file commands in a short-lived helper Job in
+the release namespace.
+
+A backup is a directory `foreman-backup-<UTC time>` with:
+
+| File | Contents | Needed to restore |
+| --- | --- | --- |
+| `foreman.dump`, `candlepin.dump`, `pulp.dump` | `pg_dump` custom format dumps of the three databases | Yes |
+| `pulp-content.tar.gz` | The `media` directory of the Pulp volume: artifacts and published files | Yes, unless content is synced again |
+| `secrets/*.json` | Every Secret the release's workloads read | See below |
+| `values.yaml` | The user-supplied chart values | Yes |
+| `metadata.json` | Namespace, release, chart version, image digests, file list | Yes |
+
+The Secrets matter for different reasons:
+
+| Secret (default name) | Why it is kept |
+| --- | --- |
+| `foreman-runtime` | `ENCRYPTION_KEY` decrypts passwords stored in the Foreman database. Also the database URL and the session key |
+| `pulp-runtime` | `database_fields.symmetric.key` decrypts Pulp database fields. Also the Django key and the database password |
+| `candlepin-runtime` | Database credentials and the OAuth secret Katello and Candlepin share |
+| `foreman-candlepin-ca` | Signs the certificates registered hosts hold. A new CA locks those hosts out |
+| `foreman-ca` | The CA bundle; it contains the Candlepin CA |
+| `foreman-proxy-ssh` | The key hosts trust for Remote Execution |
+| `foreman-client-tls`, `foreman-server-tls`, `foreman-candlepin-tls`, `foreman-proxy-tls`, `foreman-proxy-client-tls` | Can be issued again from the same CA. The in-cluster names in them include the namespace |
+
+The backup holds every credential of the release. Store it encrypted and
+readable only by administrators.
+
+The directory is local rather than a PersistentVolumeClaim in the cluster
+because a claim in the release namespace is deleted with it, and a
+`local-path` volume is lost with its node. Copy the directory to separate
+storage. Everything passes through the Kubernetes API with `kubectl exec` and
+`kubectl cp`, which is slow for large Pulp volumes. The scripts have no option
+to skip the content.
+
+### Back up
+
+```console
+tools/backup.sh --namespace foreman --release foreman /srv/backups
+```
+
+The script refuses to start while Foreman or Pulp tasks are running. It scales
+every Deployment of the release to zero, dumps the databases, archives the Pulp
+content and scales the Deployments back, so Foreman is unavailable for the
+duration. With `--online` it leaves the release running. The three dumps and the
+content are then copied one after another while the application can change
+them. `--image` selects the helper image, default `postgres:16-alpine`
+pinned by digest; its PostgreSQL major version must match the database server. Valkey is not backed
+up: it holds caches and the task queue.
+
+### Restore
+
+Prepare the target namespace as for a new installation: empty `foreman`,
+`candlepin` and `pulp` databases owned by the same users with the same
+passwords, and Valkey. The release must not exist there. Then run:
+
+```console
+tools/restore.sh --namespace foreman /srv/backups/foreman-backup-20261110T120000Z
+```
+
+The script creates the backed-up Secrets that do not exist yet, restores the
+databases with `pg_restore`, creates the Pulp claim and unpacks the content into
+it, then runs `helm install` with the backed-up values. Helm adopts the claim.
+The migration Jobs find current schemas with nothing to migrate, and the Pulp and
+Smart Proxy registration Jobs update the Smart Proxy URLs. Arguments after
+`--` go to `helm install`. Use the chart version that made the backup
+(`--chart`). The script stops if a database already has tables, and
+`--force` replaces them, so after a failed restore run it again with
+`--force`.
+
+To restore into a namespace with another name, the in-cluster names change:
+
+- Create the server certificates for the new Service names before the restore,
+  signed by the same CA. The script keeps Secrets that already exist.
+- Pass `--set-string pulp.settings.smartProxyPulpUrl=https://<release>-foreman-httpd.<new namespace>.svc`
+  and any other value that names the namespace.
+- Pass `--set-string proxy.name=<old name>`, by default
+  `proxy.<release>-foreman-proxy.<old namespace>.svc.cluster.local`, so that
+  the registration Job updates the existing Smart Proxy instead of adding a
+  second one. Hosts keep their Remote Execution proxy.
+
+`make test-backup`, run after `make test`, creates an organization, a product,
+a synced repository and a host registered with an activation key, backs the
+release up, deletes the `foreman` namespace and restores into
+`foreman-restore` with new server certificates from the test CA. It then
+checks that Katello's ping is `ok`, that the organization, product, repository
+and host exist, that a package downloads through `/pulp/content` with the
+entitlement certificate issued before the backup and matches the original
+bytes, that the host's consumer certificate still works against `/rhsm`, and
+that both Smart Proxies point at the new namespace. Run `make diagnostics
+KIND_NAMESPACE=foreman-restore` after a failure.
 
 ## Access and cleanup
 
