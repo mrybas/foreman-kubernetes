@@ -108,8 +108,20 @@ data:
       ProxyPass /pulp_ansible/galaxy/ {{ $api }}/pulp_ansible/galaxy/
       ProxyPassReverse /pulp_ansible/galaxy/ {{ $api }}/pulp_ansible/galaxy/
 
+      {{- if .Values.proxy.containerGateway.enabled }}
+
+      # Container gateway: registry requests of hosts go to foreman-proxy,
+      # which checks access and fetches from /pulpcore_registry below with
+      # this Smart Proxy's client certificate.
+      {{- $gateway := printf "https://%s:%v/container_gateway" .Values.name .Values.proxy.port }}
+      {{- range list "/v1/" "/v2/" "/index/" }}
+      ProxyPass {{ . }} {{ $gateway }}{{ . }}
+      ProxyPassReverse {{ . }} {{ $gateway }}{{ . }}
+      {{- end }}
+      {{- end }}
+
       <Location "/pulpcore_registry">
-        {{- include "httpd.pulpRemoteUser" . | trim | nindent 8 }}
+        {{- include "httpd.pulpRemoteUser" (dict "context" . "names" (ternary (list .Values.name) list .Values.proxy.containerGateway.enabled)) | trim | nindent 8 }}
         ProxyPass {{ $api }}
         ProxyPassReverse {{ $api }}
       </Location>
@@ -120,7 +132,7 @@ data:
       {{- include "httpd.pulpContent" . | trim | nindent 6 }}
 
       <Location "/pulp/api/v3">
-        {{- include "httpd.pulpRemoteUser" . | trim | nindent 8 }}
+        {{- include "httpd.pulpRemoteUser" (dict "context" .) | trim | nindent 8 }}
         ProxyPass {{ $api }}/pulp/api/v3 timeout=600
         ProxyPassReverse {{ $api }}/pulp/api/v3
       </Location>

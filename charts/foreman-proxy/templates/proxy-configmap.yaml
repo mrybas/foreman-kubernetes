@@ -94,3 +94,14 @@ data:
     export FOREMAN_SSL_VERIFY="{{ $tls }}/server-ca.crt"
     export ANSIBLE_SSH_ARGS="-C -o ControlMaster=auto -o ControlPersist=60s -o ServerAliveInterval=15 -o ServerAliveCountMax=3"
   {{- end }}
+  {{- if has "container_gateway" $modules }}
+  {{- $database := .Values.proxy.containerGateway.database }}
+  {{- /* libpq takes the password from PGPASSWORD in the environment. */}}
+  container_gateway.yml: |
+    ---
+    :enabled: https
+    :pulp_endpoint: {{ include "proxy.containerGatewayPulpEndpoint" . | quote }}
+    :db_connection_string: {{ printf "postgresql://%s@%s:%v/%s?sslmode=%s" (urlquery $database.user) $database.host $database.port (urlquery $database.name) (urlquery $database.sslMode) | quote }}
+    :db_max_connections: {{ $database.maxConnections | int }}
+    :db_pool_timeout: {{ $database.poolTimeout | int }}
+  {{- end }}

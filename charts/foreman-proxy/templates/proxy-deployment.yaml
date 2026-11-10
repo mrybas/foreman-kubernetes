@@ -55,6 +55,13 @@ spec:
             # none. Unset would load all of them, the container gateway too.
             - name: FOREMAN_PROXY_ENABLED_PLUGINS
               value: {{ include "proxy.plugins" . | quote }}
+            {{- if has "container_gateway" $modules }}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.proxy.containerGateway.database.existingSecret }}
+                  key: {{ .Values.proxy.containerGateway.database.passwordSecretKey }}
+            {{- end }}
           ports:
             - name: proxy-https
               containerPort: {{ .Values.proxy.port }}

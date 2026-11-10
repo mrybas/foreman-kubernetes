@@ -92,6 +92,12 @@ Data of a ConfigMap rendered by a template of this chart, as YAML. Takes
 {{- end }}
 
 {{- define "foreman-proxy.validate" -}}
+{{- if and .Values.proxy.containerGateway.enabled (not .Values.proxy.containerGateway.database.existingSecret) }}
+{{- fail "proxy.containerGateway.database.existingSecret is required with the container gateway" }}
+{{- end }}
+{{- if and .Values.proxy.containerGateway.pulpEndpoint (not (hasPrefix "https://" .Values.proxy.containerGateway.pulpEndpoint)) }}
+{{- fail "proxy.containerGateway.pulpEndpoint must start with https://" }}
+{{- end }}
 {{- if not .Values.name }}
 {{- fail "name is required: the host name of this Smart Proxy" }}
 {{- end }}
@@ -515,11 +521,14 @@ this Smart Proxy and picks the host's content source by it).
 {{- end }}
 {{- end }}
 
-{{/* REMOTE-USER admin for Pulp API calls from the Foreman server. */}}
+{{/*
+REMOTE-USER admin for Pulp API calls from the Foreman server. Takes a dict:
+context, and names: more client certificate names (the container gateway's).
+*/}}
 {{- define "httpd.pulpRemoteUser" -}}
 RequestHeader unset REMOTE_USER
 RequestHeader unset REMOTE-USER
-{{- range (include "foreman-proxy.foremanClientNames" . | fromJsonArray) }}
+{{- range concat (include "foreman-proxy.foremanClientNames" .context | fromJsonArray) (.names | default list) }}
 RequestHeader set REMOTE-USER "admin" "expr=%{SSL_CLIENT_VERIFY} == 'SUCCESS' && %{SSL_CLIENT_S_DN_CN} == '{{ . }}'"
 {{- end }}
 {{- end }}
@@ -589,7 +598,14 @@ SSLProxyMachineCertificateFile /run/httpd-client/client.pem
 {{- $modules = append $modules "ansible" }}
 {{- end }}
 {{- end }}
+{{- if .Values.proxy.containerGateway.enabled }}
+{{- $modules = append $modules "container_gateway" }}
+{{- end }}
 {{- toJson $modules }}
+{{- end }}
+
+{{- define "proxy.containerGatewayPulpEndpoint" -}}
+{{- .Values.proxy.containerGateway.pulpEndpoint | default (printf "https://%s" .Values.name) | trimSuffix "/" }}
 {{- end }}
 
 {{/*
@@ -599,7 +615,7 @@ loads none.
 {{- define "proxy.plugins" -}}
 {{- $modules := include "proxy.modules" . | fromJsonArray }}
 {{- $plugins := list }}
-{{- range list "remote_execution_ssh" "ansible" }}
+{{- range list "remote_execution_ssh" "ansible" "container_gateway" }}
 {{- if has . $modules }}
 {{- $plugins = append $plugins . }}
 {{- end }}
@@ -610,7 +626,7 @@ loads none.
 {{/* Feature names Foreman shows for the enabled foreman-proxy modules. */}}
 {{- define "proxy.features" -}}
 {{- $names := dict "logs" "Logs" "dynflow" "Dynflow" "registration" "Registration" "templates" "Templates"
-  "remote_execution_ssh" "Script" "ansible" "Ansible" }}
+  "remote_execution_ssh" "Script" "ansible" "Ansible" "container_gateway" "Container_Gateway" }}
 {{- $features := list }}
 {{- range (include "proxy.modules" . | fromJsonArray) }}
 {{- $features = append $features (get $names .) }}

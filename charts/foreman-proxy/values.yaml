@@ -1,7 +1,7 @@
 # A Smart Proxy with content (a capsule) for a Foreman server that runs the
 # Katello plugin: its own Pulp, an httpd front door and foreman-proxy with the
 # Registration, Templates, Dynflow and Logs modules, and optionally Remote
-# Execution and Ansible. It syncs content from the
+# Execution, Ansible and the container gateway. It syncs content from the
 # Foreman server's Pulp and forwards the subscription requests (/rhsm) of its
 # hosts to the Foreman server.
 
@@ -119,6 +119,30 @@ proxy:
   # theforeman.foreman collection; no other roles or collections.
   ansible:
     enabled: true
+  # Container gateway (feature Container_Gateway): hosts pull container
+  # images of the repositories synced to this Smart Proxy from
+  # https://<name>/v2/, logged in with their Foreman user or their
+  # subscription certificate. It keeps users, tokens and repository lists in a
+  # PostgreSQL database. httpd and foreman-proxy call each other by name, so
+  # name must resolve from the pods of this release (cluster DNS, for example
+  # the Service name, or hostAliases).
+  containerGateway:
+    enabled: false
+    # Base URL of this release's httpd, where the gateway reaches Pulp's
+    # registry with the client certificate from the bundle Secret. Default
+    # https://<name>.
+    pulpEndpoint: ""
+    database:
+      host: postgresql
+      port: 5432
+      name: container_gateway
+      user: container_gateway
+      sslMode: disable
+      # Secret in the release namespace with the database password.
+      existingSecret: container-gateway-runtime
+      passwordSecretKey: DATABASE_PASSWORD
+      maxConnections: 30
+      poolTimeout: 30
   resources:
     requests:
       cpu: 50m

@@ -548,8 +548,8 @@ registration to hosts for a Foreman server with the Katello plugin that the
   `/api/registration_commands` and three more paths forwarded to the Foreman
   server
 - foreman-proxy on port 8443 with the Registration, Templates, Dynflow and
-  Logs modules, and optionally Remote Execution and Ansible. It does not load
-  the container gateway
+  Logs modules, and optionally Remote Execution, Ansible and the container
+  gateway
 
 One Service carries ports 80, 443 and 8443, so that all three answer under one
 host name, the `name` value. Katello pairs the two Smart Proxy records of a
@@ -674,11 +674,30 @@ restarts is lost. Ansible runs on the capsule as the foreman-proxy user. A user
 who may write Ansible job templates can read every file and environment
 variable of that pod, including the bundle's keys.
 
+### Container gateway
+
+`proxy.containerGateway.enabled=true` turns on the container gateway: hosts
+pull container images of repositories synced to the capsule from
+`https://<name>/v2/`, logged in with their Foreman user or authenticated by
+their subscription certificate. httpd forwards `/v1/`, `/v2/` and `/index/` to
+foreman-proxy, which checks access and fetches from the capsule Pulp's registry
+at `https://<name>` (`proxy.containerGateway.pulpEndpoint`) with the client
+certificate from the bundle. httpd maps that certificate to the Pulp
+administrator on `/pulpcore_registry` only.
+
+The gateway stores users, tokens and repository lists in PostgreSQL. Create
+the database and a Secret, default `container-gateway-runtime`, with the
+password in the key `DATABASE_PASSWORD`; the connection settings are under
+`proxy.containerGateway.database`. httpd and foreman-proxy call each other by
+`name`, so `name` must resolve from the capsule's own pods, for example by
+using the Service's DNS name as `name`, or with `hostAliases`.
+
 `make test-content-proxy`, after `make test`, issues the capsule certificates
 from the test CA, builds the bundle, installs the chart as `capsule.test` in
 the namespace `capsule` of the same Kind cluster, with the restricted Pod
 Security profile enforced, with its own PostgreSQL and Valkey, Remote
-Execution on, and an SSH server fixture that trusts only the capsule's key.
+Execution and the container gateway on, and an SSH server fixture that trusts
+only the capsule's key.
 It runs the tests in `tests/integration` marked `content_proxy`. They check
 that the Service sends each port only to its pods, that both records exist
 with their features and Default Organization's Library, that `/pub` serves
@@ -698,7 +717,10 @@ to zero. For a host in a subnet whose Remote Execution proxy is the capsule, a
 `Run Command - Script Default` job with `uname -a` and an Ansible job (the
 `raw` module, because the fixture has no Python) succeed, Foreman's job
 details name the capsule as the proxy that ran them, and the Foreman server's
-httpd logs the result callbacks from the capsule's pod.
+httpd logs the result callbacks from the capsule's pod. With the container
+gateway on, `/v2/` asks anonymous clients to log in, answers the anonymous
+token after reaching the capsule's Pulp registry, and serves the catalog from
+its database. Pulling an image is not tested.
 
 ## Upgrade
 

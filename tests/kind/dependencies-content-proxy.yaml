@@ -1,5 +1,6 @@
 # Test fixture for the Smart Proxy with content (foreman-proxy chart): a
-# disposable PostgreSQL with the pulp database, in the Smart Proxy namespace.
+# disposable PostgreSQL with the pulp and container_gateway databases, in the
+# Smart Proxy namespace.
 # No persistence, no TLS. Valkey comes from dependencies-valkey.yaml.
 apiVersion: v1
 kind: ConfigMap
@@ -9,6 +10,9 @@ data:
   10-pulp.sql: |
     CREATE USER pulp WITH PASSWORD 'pulp-test';
     CREATE DATABASE pulp OWNER pulp;
+  20-container-gateway.sql: |
+    CREATE USER container_gateway WITH PASSWORD 'container-gateway-test';
+    CREATE DATABASE container_gateway OWNER container_gateway;
 ---
 apiVersion: v1
 kind: Service

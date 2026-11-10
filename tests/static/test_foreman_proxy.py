@@ -119,7 +119,7 @@ def test_renders_the_smart_proxy(manifests):
 
 
 def test_containers_use_restricted_security_context(render):
-    for values in ({}, {"pulp": {"storage": S3}}, REX):
+    for values in ({}, {"pulp": {"storage": S3}}, REX, GATEWAY):
         for workload in workloads(render(values)):
             pod = pod_spec(workload)
             assert pod["automountServiceAccountToken"] is False
@@ -597,3 +597,64 @@ def test_default_ssh_secret_name(render):
 def test_registration_waits_for_the_ssh_public_key():
     script = (CHART / "files" / "register.rb").read_text()
     assert "remote_execution_pubkey" in script
+
+
+GATEWAY = {"proxy": {"containerGateway": {"enabled": True}}}
+
+
+def test_container_gateway_is_off_by_default(manifests):
+    assert "container_gateway" not in proxy_modules(manifests)
+    assert "container_gateway" not in vhosts(manifests)["https"]
+    (container,) = pod_spec(manifests["Deployment", f"{FULLNAME}-proxy"])["containers"]
+    assert "PGPASSWORD" not in env(container)
+
+
+def test_container_gateway(render):
+    manifests = render(deep_merge(GATEWAY, {"proxy": {"containerGateway": {"database": {
+        "host": "db.example.test", "existingSecret": "cg-db", "passwordSecretKey": "password"}}}}))
+    gateway = proxy_modules(manifests)["container_gateway"]
+    assert gateway == {
+        ":enabled": "https", ":pulp_endpoint": f"https://{NAME}",
+        ":db_connection_string": "postgresql://container_gateway@db.example.test:5432/container_gateway"
+                                 "?sslmode=disable",
+        ":db_max_connections": 30, ":db_pool_timeout": 30}
+    # The client certificate for Pulp defaults to the proxy's foreman_ssl_*
+    # files from the bundle; no pulp_client_ssl_* override.
+    (container,) = pod_spec(manifests["Deployment", f"{FULLNAME}-proxy"])["containers"]
+    assert env(container)["FOREMAN_PROXY_ENABLED_PLUGINS"]["value"] == "container_gateway"
+    assert env(container)["PGPASSWORD"] == {"name": "PGPASSWORD", "valueFrom": {
+        "secretKeyRef": {"name": "cg-db", "key": "password"}}}
+    mounts = {mount["mountPath"] for mount in container["volumeMounts"]}
+    assert "/etc/foreman-proxy/settings.d/container_gateway.yml" in mounts
+    (register,) = pod_spec(manifests["Job", f"{FULLNAME}-registration-1"])["containers"]
+    assert "Container_Gateway" in env(register)["PROXY_FEATURES"]["value"].split()
+    # httpd sends registry requests to foreman-proxy by name.
+    https = vhosts(manifests)["https"]
+    for path in ("/v1/", "/v2/", "/index/"):
+        assert f"ProxyPass {path} https://{NAME}:8443/container_gateway{path}" in https
+    assert "container_gateway" not in vhosts(manifests)["http"]
+    # Pulp's registry, and only the registry, accepts the gateway's client
+    # certificate (CN = name) as administrator.
+    for location, names in (("/pulpcore_registry", [FOREMAN, NAME]), ("/pulp/api/v3", [FOREMAN])):
+        block = re.search(rf'<Location "{re.escape(location)}">(.*?)</Location>', https, re.S).group(1)
+        assert re.findall(r"%\{SSL_CLIENT_S_DN_CN\} == '([^']+)'", block) == names, location
+
+
+def test_container_gateway_secrets_come_from_references(render):
+    manifests = render(deep_merge(REX, GATEWAY))
+    assert not manifests.of_kind("Secret")
+    assert set(manifests) == set(render())
+    for content in config(manifests, f"{FULLNAME}-proxy").values():
+        assert "password" not in content.lower()
+        assert "PRIVATE KEY" not in content
+
+
+@pytest.mark.parametrize("values, message", [
+    ({"database": {"existingSecret": ""}}, "existingSecret is required"),
+    ({"pulpEndpoint": "http://capsule.example.test"}, "pulpEndpoint must start with https://"),
+])
+def test_container_gateway_invalid_values_fail(tmp_path, values, message):
+    result = helm_template(deep_merge(REQUIRED, deep_merge(GATEWAY, {"proxy": {"containerGateway": values}})),
+                           tmp_path)
+    assert result.returncode != 0
+    assert message in result.stderr

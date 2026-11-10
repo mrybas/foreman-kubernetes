@@ -160,6 +160,9 @@ case "${1:-}" in
       --from-literal=SECRET_KEY='fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210' \
       --from-literal=database_fields.symmetric.key='Yk2vC4m8ZXH0g7Qb3xN1rT6uW9aL5sD2fJ8hK0pE4cI=' \
       --dry-run=client --output=yaml | kubectl --context "${context}" apply --filename=-
+    kubectl --context "${context}" --namespace "${capsule_namespace}" create secret generic container-gateway-runtime \
+      --from-literal=DATABASE_PASSWORD=container-gateway-test \
+      --dry-run=client --output=yaml | kubectl --context "${context}" apply --filename=-
     # The identity: CA bundle, server CA and OAuth consumer of the foreman
     # release, and the certificates deploy issued for capsule_name.
     certificates="${CERT_DIR:-${repo_root}/artifacts/certificates/${namespace}-${release}}"
@@ -180,9 +183,11 @@ case "${1:-}" in
       --set-string name="${capsule_name}" --set-string foreman.url=https://foreman.test \
       --set-string service.clusterIP="${capsule_cluster_ip}" \
       --set-string "hostAliases[0].ip=${HTTPD_CLUSTER_IP:-10.96.0.80}" --set 'hostAliases[0].hostnames={foreman.test}' \
+      --set-string "hostAliases[1].ip=${capsule_cluster_ip}" --set "hostAliases[1].hostnames={${capsule_name}}" \
       --set 'registration.lifecycleEnvironments={Library}' \
       --set proxy.remoteExecutionSsh.enabled=true \
       --set-string proxy.remoteExecutionSsh.secretName="${capsule_release}-proxy-ssh" \
+      --set proxy.containerGateway.enabled=true \
       --wait --wait-for-jobs --timeout 20m "${@:2}"
     ;;
   diagnostics)
