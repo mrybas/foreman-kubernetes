@@ -61,7 +61,7 @@ data:
   foreman.conf: |
     <VirtualHost *:8080>
       {{- include "httpd.serverNames" . | trim | nindent 6 }}
-      {{- include "httpd.unsetClientHeaders" . | trim | indent 6 | printf "\n\n%s" }}
+      {{- include "httpd.unsetClientHeaders" (dict "context" .) | trim | indent 6 | printf "\n\n%s" }}
       RequestHeader set X-FORWARDED-PROTO "http"
       RequestHeader set SSL-CLIENT-S-DN ""
       RequestHeader set SSL-CLIENT-CERT ""
@@ -80,7 +80,7 @@ data:
   foreman-ssl.conf: |
     <VirtualHost *:8443>
       {{- include "httpd.serverNames" . | trim | nindent 6 }}
-      {{- include "httpd.unsetClientHeaders" . | trim | indent 6 | printf "\n\n%s" }}
+      {{- include "httpd.unsetClientHeaders" (dict "context" . "trusted" true) | trim | indent 6 | printf "\n\n%s" }}
       RequestHeader set X-FORWARDED-PROTO "https"
       RequestHeader set SSL-CLIENT-S-DN "%{SSL_CLIENT_S_DN}s"
       RequestHeader set SSL-CLIENT-CERT "%{SSL_CLIENT_CERT}s"

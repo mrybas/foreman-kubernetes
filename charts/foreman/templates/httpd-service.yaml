@@ -11,6 +11,9 @@ metadata:
   {{- end }}
 spec:
   type: {{ .Values.httpd.service.type }}
+  {{- with .Values.httpd.service.clusterIP }}
+  clusterIP: {{ . }}
+  {{- end }}
   {{- if and .Values.httpd.service.externalTrafficPolicy (ne .Values.httpd.service.type "ClusterIP") }}
   externalTrafficPolicy: {{ .Values.httpd.service.externalTrafficPolicy }}
   {{- end }}

@@ -38,6 +38,24 @@ foreman:
   # 127.0.0.0/8 and ::1. Set it to the pod network range when httpd is
   # enabled so Foreman sees the real client address.
   trustedProxies: []
+  # OAuth 1.0a consumer for API clients that sign their requests, such as a
+  # Smart Proxy with content that registers itself (foremanctl puts the same
+  # pair in a proxy's auth bundle). Empty existingSecret leaves OAuth off. When
+  # set, an init container of the web pods writes oauth_active, the key and
+  # the secret into Foreman's settings, which then show them as read-only.
+  # oauth_map_users is false, as in foremanctl, so a signed request acts as an
+  # administrator: whoever has the pair has full API access.
+  oauth:
+    existingSecret: ""
+    consumerKeySecretKey: OAUTH_CONSUMER_KEY
+    consumerSecretSecretKey: OAUTH_CONSUMER_SECRET
+  # Extra /etc/hosts entries for the Foreman web and Dynflow pods and the
+  # registration Jobs, in the pod hostAliases format
+  # ([{ip: 192.0.2.10, hostnames: [capsule.example.test]}]). Foreman connects
+  # to every Smart Proxy by the host name of its URL, including the Pulp URL a
+  # Smart Proxy with content advertises. Use this when those names are not in
+  # the cluster DNS.
+  hostAliases: []
 
 # TLS certificates, read from existing Secrets. The chart does not create
 # certificates and does not need cert-manager. Create the Secrets in the
@@ -144,9 +162,24 @@ httpd:
   # Client certificate common names (CN), besides foreman.fqdn, that Pulp
   # accepts as its admin user.
   pulpTrustedClientNames: []
+  # Client certificate common names (CN) of Smart Proxies with content
+  # (capsules) that forward /rhsm requests of their hosts to this server.
+  # httpd removes X-RHSM-SSL-CLIENT-CERT and X-Forwarded-Host in every spelling
+  # from all clients, except from a client whose certificate it verified and
+  # whose CN is listed here. From such a proxy it keeps X_RHSM_SSL_CLIENT_CERT
+  # (the host's certificate; Katello authenticates the host with it) and the
+  # last X-Forwarded-Host value (Katello picks the host's content source by
+  # it). A listed proxy can act as any host, so list only proxies you run.
+  # Each entry is a host name, compared literally (no wildcards). Only the
+  # first CN of the certificate counts, so the CA in certificates.ca must
+  # issue a certificate with such a CN only to that proxy.
+  trustedProxyClientNames: []
   service:
     # ClusterIP, NodePort or LoadBalancer.
     type: ClusterIP
+    # Fixed cluster IP of the Service, for example to point foreman.hostAliases
+    # at it. Empty lets Kubernetes choose.
+    clusterIP: ""
     annotations: {}
     # Local keeps the client source address on NodePort and LoadBalancer
     # Services. Empty leaves the Kubernetes default.

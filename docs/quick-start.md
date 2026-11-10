@@ -41,7 +41,7 @@ front door, Dynflow, Pulp, Candlepin, Katello and the Smart Proxy enabled.
 Helm waits for the migration Jobs, the ready Deployments and the Jobs that
 register Pulp and the Smart Proxy in Foreman.
 Then [pytest-helm-charts](https://github.com/giantswarm/pytest-helm-charts) connects
-to that cluster and runs the 61 tests in `tests/integration` that are not
+to that cluster and runs the 68 tests in `tests/integration` that are not
 marked `backup` (see [Back up and restore](#back-up-and-restore)); the 6 tests
 for [Pulp content in S3](#store-pulp-content-in-s3) are skipped unless
 `PULP_STORAGE=s3`. For Foreman:
@@ -414,6 +414,58 @@ authenticate as the consumer. The repository is a copy of the Pulp project's sma
 `rpm-unsigned` fixture. `tests/kind/rpm-repository.sh` downloads it on the
 machine that runs the tests and serves it inside the cluster at
 `http://rpm-repository/`, so the cluster needs no outbound access for it.
+
+## Prepare for Smart Proxies with content
+
+A Smart Proxy with content (a capsule) runs its own Pulp, syncs content from
+this server and forwards the `/rhsm` requests of its hosts here. The `foreman`
+Helm chart does not deploy one. It has the settings a capsule needs:
+
+- `httpd.trustedProxyClientNames`: client certificate CNs of capsules. A
+  capsule forwards a host's certificate as `X_RHSM_SSL_CLIENT_CERT`, which is
+  how puppet-foreman_proxy_content and foremanctl capsules send it, and its
+  own name as `X-Forwarded-Host`, which Katello uses to pick the host's content
+  source. httpd keeps exactly these two headers, and only the last
+  `X-Forwarded-Host` value, when the request carries a certificate that it
+  verified against the CA and whose CN is in the list. From every other
+  client it removes both, in every spelling, as before. A listed capsule can
+  act as any host, so list only capsules you run.
+- `foreman.oauth.existingSecret`: a Secret with `OAUTH_CONSUMER_KEY` and
+  `OAUTH_CONSUMER_SECRET` (key names configurable). An init container of the
+  web pods writes them, with `oauth_active: true` and `oauth_map_users: false`,
+  into a settings file in a memory-backed volume. Requests signed with this
+  pair act as an administrator, as with foremanctl, so treat the Secret like
+  the admin password.
+- `foreman.hostAliases`: `/etc/hosts` entries for the web and Dynflow pods and
+  the registration Jobs. Foreman connects to every Smart Proxy by the host name
+  in its URL, so capsule names must resolve inside the cluster, through DNS or
+  these entries.
+- `httpd.service.clusterIP`: a fixed address for the httpd Service, so that
+  `foreman.hostAliases` can point `foreman.fqdn` at it.
+
+A capsule syncs from the Pulp URL that Pulp advertises,
+`pulp.settings.smartProxyPulpUrl`, the same URL Katello uses itself. A capsule
+outside the cluster needs it to be `https://<foreman.fqdn>`, which then has to
+resolve to httpd inside the cluster too: set `httpd.service.clusterIP`, map
+`foreman.fqdn` to it in `foreman.hostAliases` and set
+`katello.pulpSmartProxy.url` to `https://<foreman.fqdn>/pulp/api/v3/smart_proxy`.
+The CA bundle must contain the CA of the httpd server certificate, because the
+capsule verifies this server with it.
+
+`make test` lists `capsule.test` in `httpd.trustedProxyClientNames`, issues a
+client certificate for it from the test CA, sets an OAuth consumer and maps
+`foreman.test` to a fixed httpd address. It checks that a request with that
+certificate and a host's certificate in `X_RHSM_SSL_CLIENT_CERT` authenticates
+as the host, while the same header in another spelling, from a CA-signed
+certificate that is not listed, or without a certificate does not. It checks
+that a host registered through the capsule certificate records the capsule as
+`registered_through` and that a client without it cannot choose that value.
+For OAuth it checks that the settings are read-only, that Foreman hides the
+key and secret, that a signed request is accepted and unsigned or wrongly
+signed ones are refused, and that the web pod logs do not contain the secret.
+It checks that the web and Dynflow pods resolve `foreman.test` to httpd and
+that the Pulp Smart Proxy can be registered under
+`https://foreman.test/pulp/api/v3/smart_proxy`.
 
 ## Upgrade
 

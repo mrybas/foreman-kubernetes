@@ -40,6 +40,10 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with .Values.foreman.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- if .Values.katello.enabled }}
       initContainers:
         {{- include "katello.initContainer" . | nindent 8 }}

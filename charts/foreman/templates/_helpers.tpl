@@ -735,6 +735,24 @@ RequestHeader unset {{ . }}
 {{- end }}
 
 {{/*
+httpd expression that is true when the request carries a client certificate
+that httpd verified against the CA and whose CN is in
+httpd.trustedProxyClientNames. Empty when the list is empty.
+*/}}
+{{- define "httpd.trustedProxyExpression" -}}
+{{- with .Values.httpd.trustedProxyClientNames }}
+{{- $names := list }}
+{{- range . }}
+{{- if not (regexMatch "^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$" .) }}
+{{- fail (printf "httpd.trustedProxyClientNames: %q is not a host name" .) }}
+{{- end }}
+{{- $names = append $names (printf "'%s'" .) }}
+{{- end }}
+{{- printf "%%{SSL_CLIENT_VERIFY} == 'SUCCESS' && %%{SSL_CLIENT_S_DN_CN} in {%s}" (join ", " $names) }}
+{{- end }}
+{{- end }}
+
+{{/*
 Request headers that Foreman, Katello or Pulp trust when httpd sends them:
 external login (REMOTE-USER, as foremanctl removes it), the client certificate
 (Katello reads X-RHSM-SSL-CLIENT-CERT before SSL-CLIENT-CERT and does not
@@ -743,14 +761,43 @@ scheme; Rack reads X-Forwarded-Ssl and Forwarded before X-Forwarded-Proto).
 httpd removes every spelling a client sends, before it sets its own values.
 mod_proxy then adds X-Forwarded-For, X-Forwarded-Host and X-Forwarded-Server
 for the real peer.
+
+Takes a dict: context is the root context; trusted is true in the HTTPS vhost.
+There, a Smart Proxy listed in httpd.trustedProxyClientNames that forwards
+/rhsm for its hosts keeps exactly two headers: X_RHSM_SSL_CLIENT_CERT, the
+spelling foremanctl and puppet-foreman_proxy_content set to the host's
+certificate (other spellings are not overwritten by those proxies, so a host
+could have sent them), and X-Forwarded-Host, cut to the last value, which is
+the one the proxy's mod_proxy added. Katello reads the first X-Forwarded-Host
+value to choose the host's content source; mod_proxy here appends its own
+after it.
 */}}
 {{- define "httpd.unsetClientHeaders" -}}
+{{- $trusted := "" }}
+{{- if .trusted }}
+{{- $trusted = include "httpd.trustedProxyExpression" .context }}
+{{- end }}
+{{- $kept := dict "X-RHSM-SSL-CLIENT-CERT" "X_RHSM_SSL_CLIENT_CERT" "X-FORWARDED-HOST" "X-FORWARDED-HOST" }}
 {{- range list
   "REMOTE-USER" "REMOTE-USER-EMAIL" "REMOTE-USER-FIRSTNAME" "REMOTE-USER-LASTNAME" "REMOTE-USER-GROUPS"
   "SSL-CLIENT-S-DN" "SSL-CLIENT-CERT" "SSL-CLIENT-VERIFY" "X-RHSM-SSL-CLIENT-CERT" "X-CLIENT-CERT"
   "X-FORWARDED-FOR" "X-FORWARDED-HOST" "X-FORWARDED-PORT" "X-FORWARDED-PROTO" "X-FORWARDED-SCHEME"
   "X-FORWARDED-SSL" "X-FORWARDED-SERVER" "FORWARDED" "CLIENT-IP" }}
+{{- $keep := get $kept . }}
+{{- if and $trusted $keep }}
+{{- range splitList "\n" (include "httpd.unsetEverySpelling" . | trim) }}
+{{- if eq . (printf "RequestHeader unset %s" $keep) }}
+{{ . }} "expr=!({{ $trusted }})"
+{{- else }}
+{{ . }}
+{{- end }}
+{{- end }}
+{{- else }}
 {{- include "httpd.unsetEverySpelling" . }}
+{{- end }}
+{{- end }}
+{{- if $trusted }}
+RequestHeader edit X-FORWARDED-HOST "^.*,[ \t]*" "" "expr={{ $trusted }}"
 {{- end }}
 {{- end }}
 
@@ -900,6 +947,72 @@ katello-config volume. Every pod that loads Katello runs it.
 - name: katello-config
   mountPath: /etc/foreman/plugins/katello.yaml
   subPath: katello.yaml
+  readOnly: true
+{{- end }}
+
+{{/*
+Init container that writes the OAuth consumer settings from
+foreman.oauth.existingSecret into the oauth-config volume. Foreman merges
+config/settings.d/*.yaml into its settings after settings.yaml, as plain YAML,
+and shows these settings as read-only. Only the web pods verify OAuth requests.
+*/}}
+{{- define "foreman.oauthInitContainer" -}}
+- name: oauth-config
+  image: {{ include "foreman.image" . }}
+  imagePullPolicy: {{ .Values.image.pullPolicy }}
+  command:
+    - ruby
+    - -ryaml
+    - -e
+    - |
+      settings = { oauth_active: true, oauth_map_users: false }
+      { oauth_consumer_key: "FOREMAN_OAUTH_CONSUMER_KEY", oauth_consumer_secret: "FOREMAN_OAUTH_CONSUMER_SECRET" }.each do |setting, variable|
+        value = ENV.fetch(variable)
+        abort("#{variable} is empty") if value.empty?
+        settings[setting] = value
+      end
+      File.write("/run/foreman-oauth/oauth.yaml", YAML.dump(settings), perm: 0o600)
+  env:
+    - name: FOREMAN_OAUTH_CONSUMER_KEY
+      valueFrom:
+        secretKeyRef:
+          name: {{ .Values.foreman.oauth.existingSecret }}
+          key: {{ .Values.foreman.oauth.consumerKeySecretKey }}
+    - name: FOREMAN_OAUTH_CONSUMER_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: {{ .Values.foreman.oauth.existingSecret }}
+          key: {{ .Values.foreman.oauth.consumerSecretSecretKey }}
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    runAsNonRoot: true
+    runAsGroup: 994
+    runAsUser: 994
+  volumeMounts:
+    - name: oauth-config
+      mountPath: /run/foreman-oauth
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+{{- end }}
+
+{{- define "foreman.oauthVolume" -}}
+- name: oauth-config
+  emptyDir:
+    medium: Memory
+    sizeLimit: 1Mi
+{{- end }}
+
+{{- define "foreman.oauthVolumeMount" -}}
+- name: oauth-config
+  mountPath: /usr/share/foreman/config/settings.d/oauth.yaml
+  subPath: oauth.yaml
   readOnly: true
 {{- end }}
 

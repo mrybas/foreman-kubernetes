@@ -6,6 +6,7 @@ is synced from KATELLO_TEST_REPO_URL, by default the in-cluster fixture that
 tests/kind/rpm-repository.sh creates. The organization is deleted at the end.
 """
 
+import base64
 import gzip
 import json
 import os
@@ -232,3 +233,104 @@ def test_forged_consumer_certificate_header_is_rejected(api, content, httpd, pki
         hosts = api.get("/api/v2/hosts?search=" + quote(f"name = {name}"))["results"]
         for host in hosts:
             api.request("DELETE", f"/api/v2/hosts/{host['id']}")
+
+
+# A Smart Proxy with content forwards /rhsm for its hosts. CAPSULE_NAME is the
+# CN of the client certificate tests/kind/certificates.sh issues as
+# <release>-capsule-client-tls and the release lists in
+# httpd.trustedProxyClientNames.
+CAPSULE_NAME = os.environ.get("CAPSULE_NAME", "capsule.test")
+CANONICAL_RHSM_HEADER = "X_RHSM_SSL_CLIENT_CERT"
+
+
+@pytest.fixture(scope="module")
+def capsule(kube_cluster, namespace, release, pki, tmp_path_factory):  # noqa: F811
+    """TLS context with the capsule client certificate, if the release trusts it."""
+    config = kube_cluster.kubectl(f"get configmap {release}-foreman-httpd", namespace=namespace)
+    if f"'{CAPSULE_NAME}'" not in config["data"]["foreman-ssl.conf"]:
+        pytest.skip(f"httpd.trustedProxyClientNames does not list {CAPSULE_NAME}")
+    secret = kube_cluster.kubectl(f"get secret {release}-capsule-client-tls", namespace=namespace)
+    directory = tmp_path_factory.mktemp("capsule")
+    for key in ("tls.crt", "tls.key"):
+        (directory / key).write_bytes(base64.b64decode(secret["data"][key]))
+    context = ssl.create_default_context(cafile=pki["ca.crt"])
+    context.load_cert_chain(str(directory / "tls.crt"), str(directory / "tls.key"))
+    return context
+
+
+def register_consumer(api, content, httpd, context, headers):  # noqa: F811
+    """Register a host with the test activation key; return the consumer."""
+    name = f"proxy-test-{uuid.uuid4().hex[:8]}.example.test"
+    status, _, body = https(
+        httpd, context, "POST",
+        "/rhsm/consumers?" + urlencode({"owner": content["organization"]["label"],
+                                        "activation_keys": content["activation_key"]["name"]}),
+        headers={"Content-Type": "application/json", **headers},
+        body=json.dumps({"name": name, "type": {"label": "system"}, "facts": {
+            "network.hostname": name, "system.certificate_version": "3.2",
+            "uname.machine": "x86_64", "distribution.name": "Fedora",
+            "distribution.version": "40"}}))
+    assert status == 200, body[:2000]
+    content.setdefault("proxy_test_hosts", []).append(name)
+    return json.loads(body)
+
+
+@pytest.fixture(scope="module")
+def proxy_test_hosts(api, content):
+    yield
+    for name in content.get("proxy_test_hosts", []):
+        for host in api.get("/api/v2/hosts?search=" + quote(f"name = {name}"))["results"]:
+            api.request("DELETE", f"/api/v2/hosts/{host['id']}")
+
+
+def registered_through(api, consumer):
+    hosts = api.get("/api/v2/hosts?search=" + quote(f"name = {consumer['name']}"))["results"]
+    (host,) = hosts
+    return api.get(f"/api/v2/hosts/{host['id']}")["subscription_facet_attributes"]["registered_through"]
+
+
+def as_forwarded(pem):
+    """A certificate as httpd's %{SSL_CLIENT_CERT}s puts it in a header."""
+    return " ".join(pem.strip().splitlines())
+
+
+def test_only_a_trusted_proxy_sets_the_registering_host(api, content, httpd, capsule,  # noqa: F811
+                                                        proxy_test_hosts):
+    """Katello assigns a host's content source by the first X-Forwarded-Host
+    value. From a trusted proxy httpd keeps the last value the proxy sent, the
+    one its own mod_proxy added; from anyone else it keeps none."""
+    step(content, "activation_key")
+    forged = {"X-Forwarded-Host": CAPSULE_NAME, "X_Forwarded_Host": CAPSULE_NAME}
+    consumer = register_consumer(api, content, httpd, api.context, forged)
+    assert registered_through(api, consumer) == FQDN
+    # A capsule forwards a new host without a certificate as an empty header.
+    consumer = register_consumer(api, content, httpd, capsule, {
+        CANONICAL_RHSM_HEADER: "",
+        "X-Forwarded-Host": f"client-chosen.example.test, {CAPSULE_NAME}"})
+    assert registered_through(api, consumer) == CAPSULE_NAME
+    content["proxy_consumer"] = consumer
+
+
+def test_trusted_proxy_forwards_the_host_certificate(api, content, httpd, pki, capsule,  # noqa: F811
+                                                     proxy_test_hosts):
+    """With the capsule client certificate, X_RHSM_SSL_CLIENT_CERT carrying a
+    host's own certificate authenticates as that host. Any other spelling, a
+    certificate the CA signed but whose CN is not listed, or no certificate:
+    httpd drops the header and Katello sees only the TLS client."""
+    step(content, "proxy_consumer")
+    consumer = content["proxy_consumer"]
+    path = f"/rhsm/consumers/{consumer['uuid']}"
+    header = as_forwarded(consumer["idCert"]["cert"])
+    status, _, body = https(httpd, capsule, "GET", path, headers={CANONICAL_RHSM_HEADER: header})
+    assert status == 200, body[:2000]
+    assert json.loads(body)["uuid"] == consumer["uuid"]
+    rejected = [
+        ("capsule, hyphen spelling", capsule, "X-RHSM-SSL-CLIENT-CERT"),
+        ("capsule, mixed spelling", capsule, "X-RHSM_SSL-CLIENT-CERT"),
+        ("CA-valid certificate not listed", tls_context(pki, client_cert=True), CANONICAL_RHSM_HEADER),
+        ("no certificate", tls_context(pki), CANONICAL_RHSM_HEADER),
+    ]
+    for label, context, name in rejected:
+        status, _, body = https(httpd, context, "GET", path, headers={name: header})
+        assert status in (401, 403, 404), (label, status, body[:500])
+        assert consumer["uuid"].encode() not in body, label

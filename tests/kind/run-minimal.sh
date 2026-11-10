@@ -44,9 +44,11 @@ case "${1:-}" in
       --dry-run=client --output=yaml | kubectl --context "${context}" apply --filename=-
     # Test CA, Foreman client certificate (CN is the FQDN), Candlepin server
     # certificate, the httpd server certificate for the FQDN and the
-    # in-cluster Service names, and the Smart Proxy server and client
-    # certificates for the proxy pod's DNS name.
+    # in-cluster Service names, the Smart Proxy server and client
+    # certificates for the proxy pod's DNS name, and the client certificate
+    # of a Smart Proxy with content (capsule.test) that httpd trusts.
     PROXY_SANS="proxy.${release}-foreman-proxy.${namespace}.svc.cluster.local" \
+      CAPSULE_NAMES=capsule.test \
       KUBE_CONTEXT="${context}" "${repo_root}/tests/kind/certificates.sh" \
       "${namespace}" "${release}" foreman.test foreman.test "${release}-foreman-httpd" \
       "${release}-foreman-httpd.${namespace}.svc" "${release}-foreman-httpd.${namespace}.svc.cluster.local"
@@ -79,8 +81,16 @@ case "${1:-}" in
       --from-literal=DATABASE_USERNAME=candlepin --from-literal=DATABASE_PASSWORD=candlepin-test \
       --from-literal=OAUTH_SECRET=candlepin-oauth-test \
       --dry-run=client --output=yaml | kubectl --context "${context}" apply --filename=-
+    # OAuth consumer for signed API requests.
+    kubectl --context "${context}" --namespace "${namespace}" create secret generic foreman-oauth \
+      --from-literal=OAUTH_CONSUMER_KEY=foreman-oauth-test-key \
+      --from-literal=OAUTH_CONSUMER_SECRET=foreman-oauth-test-secret \
+      --dry-run=client --output=yaml | kubectl --context "${context}" apply --filename=-
     # Yum repository the Katello tests sync, served inside the cluster.
     KUBE_CONTEXT="${context}" "${repo_root}/tests/kind/rpm-repository.sh" "${namespace}"
+    # A fixed httpd Service address in Kind's Service range (10.96.0.0/16),
+    # so the Foreman pods resolve the public name foreman.test to httpd.
+    httpd_cluster_ip="${HTTPD_CLUSTER_IP:-10.96.0.80}"
     # PULP_STORAGE=s3: Pulp content in a MinIO bucket instead of a volume.
     storage_values=()
     if [[ "${PULP_STORAGE:-filesystem}" == s3 ]]; then
@@ -101,6 +111,9 @@ case "${1:-}" in
       --set 'foreman.trustedProxies={10.244.0.0/16}' \
       --set dynflow.enabled=true --set pulp.enabled=true --set candlepin.enabled=true \
       --set katello.enabled=true --set proxy.enabled=true \
+      --set 'httpd.trustedProxyClientNames={capsule.test}' --set foreman.oauth.existingSecret=foreman-oauth \
+      --set-string httpd.service.clusterIP="${httpd_cluster_ip}" \
+      --set-string "foreman.hostAliases[0].ip=${httpd_cluster_ip}" --set 'foreman.hostAliases[0].hostnames={foreman.test}' \
       --set-string pulp.settings.smartProxyPulpUrl="https://${release}-foreman-httpd.${namespace}.svc" \
       --set-string pulp.settings.contentOrigin=https://foreman.test \
       ${storage_values[@]+"${storage_values[@]}"} --wait --wait-for-jobs --timeout 30m "${@:2}"
