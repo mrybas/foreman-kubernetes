@@ -1,0 +1,158 @@
+{{- if .Values.proxy.enabled }}
+{{- $tls := include "proxy.tlsPath" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "proxy.fullname" . }}
+  labels:
+    {{- include "foreman.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+spec:
+  # Dynflow keeps the proxy's running jobs in memory, so two pods would split
+  # the jobs between them.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "foreman.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: proxy
+  template:
+    metadata:
+      labels:
+        {{- include "foreman.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: proxy
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/proxy-configmap.yaml") . | sha256sum }}
+    spec:
+      # With the headless Service as subdomain, the pod gets the DNS name used
+      # in the default proxy.url.
+      hostname: proxy
+      subdomain: {{ include "proxy.fullname" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 991
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 991
+        runAsNonRoot: true
+        runAsUser: 991
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: foreman-proxy
+          image: {{ printf "%s:%s" .Values.proxy.image.repository .Values.proxy.image.tag }}
+          imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
+          command:
+            - /usr/share/foreman-proxy/bin/smart-proxy
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            runAsGroup: 991
+            runAsUser: 991
+          env:
+            # Bundler loads only these optional plugins. Others in the image,
+            # such as container_gateway, are not loaded at all.
+            - name: FOREMAN_PROXY_ENABLED_PLUGINS
+              value: {{ ternary "remote_execution_ssh ansible" "remote_execution_ssh" .Values.proxy.ansible.enabled | quote }}
+          ports:
+            - name: https
+              containerPort: {{ .Values.proxy.service.port }}
+              protocol: TCP
+          volumeMounts:
+            - name: configuration
+              mountPath: /etc/foreman-proxy/settings.yml
+              subPath: settings.yml
+              readOnly: true
+            {{- range $module := list "logs" "dynflow" "remote_execution_ssh" }}
+            - name: configuration
+              mountPath: /etc/foreman-proxy/settings.d/{{ $module }}.yml
+              subPath: {{ $module }}.yml
+              readOnly: true
+            {{- end }}
+            {{- if .Values.proxy.ansible.enabled }}
+            - name: configuration
+              mountPath: /etc/foreman-proxy/settings.d/ansible.yml
+              subPath: ansible.yml
+              readOnly: true
+            - name: configuration
+              mountPath: /etc/foreman-proxy/ansible.env
+              subPath: ansible.env
+              readOnly: true
+            {{- end }}
+            - name: tls
+              mountPath: {{ $tls }}
+              readOnly: true
+            - name: ssh-key
+              mountPath: /etc/foreman-proxy/ssh
+              readOnly: true
+          # /features needs no client certificate. A TCP probe would log an
+          # SSL error on every check.
+          {{- $probe := dict "path" "/features" "port" "https" "scheme" "HTTPS" "httpHeaders" (list (dict "name" "Host" "value" (urlParse (include "proxy.url" .)).hostname)) }}
+          startupProbe:
+            httpGet:
+              {{- toYaml $probe | nindent 14 }}
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              {{- toYaml $probe | nindent 14 }}
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              {{- toYaml $probe | nindent 14 }}
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.proxy.resources | nindent 12 }}
+      volumes:
+        - name: configuration
+          configMap:
+            name: {{ include "proxy.fullname" . }}
+        # Files are root:foreman-proxy 0440. OpenSSH accepts a private key
+        # that is not owned by the user; root:991 0440 lets only the proxy
+        # group read it.
+        - name: tls
+          projected:
+            defaultMode: 0440
+            sources:
+              - secret:
+                  name: {{ include "foreman.caSecretName" . }}
+                  items:
+                    - key: {{ .Values.certificates.ca.key }}
+                      path: ca.crt
+              - secret:
+                  name: {{ include "proxy.tlsSecretName" . }}
+                  items:
+                    - key: tls.crt
+                      path: server.crt
+                    - key: tls.key
+                      path: server.key
+              {{- if hasPrefix "https://" (include "proxy.foremanUrl" .) }}
+              # The proxy's own client certificate for calls to Foreman.
+              - secret:
+                  name: {{ include "proxy.clientTlsSecretName" . }}
+                  items:
+                    - key: tls.crt
+                      path: client.crt
+                    - key: tls.key
+                      path: client.key
+              {{- end }}
+        - name: ssh-key
+          secret:
+            secretName: {{ include "proxy.sshSecretName" . }}
+            defaultMode: 0440
+            items:
+              - key: id_rsa_foreman_proxy
+                path: id_rsa_foreman_proxy
+              - key: id_rsa_foreman_proxy.pub
+                path: id_rsa_foreman_proxy.pub
+{{- end }}

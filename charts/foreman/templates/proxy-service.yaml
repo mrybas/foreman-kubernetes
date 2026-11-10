@@ -1,0 +1,21 @@
+{{- if .Values.proxy.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "proxy.fullname" . }}
+  labels:
+    {{- include "foreman.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+spec:
+  # Headless: DNS has a record for the pod (hostname "proxy") and reverse DNS
+  # of the pod IP returns that name.
+  clusterIP: None
+  selector:
+    {{- include "foreman.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+  ports:
+    - name: https
+      port: {{ .Values.proxy.service.port }}
+      targetPort: https
+      protocol: TCP
+{{- end }}

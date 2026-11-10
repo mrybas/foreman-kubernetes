@@ -62,6 +62,12 @@ settings.yaml: |
   :foreman_url: {{ $context.Values.foreman.externalUrl | quote }}
   :hosts:
     - {{ $context.Values.foreman.fqdn | quote }}
+  {{- if $context.Values.proxy.enabled }}
+  {{- $proxyForemanHost := (urlParse (include "proxy.foremanUrl" $context)).hostname }}
+  {{- if ne $proxyForemanHost $context.Values.foreman.fqdn }}
+    - {{ $proxyForemanHost | quote }}
+  {{- end }}
+  {{- end }}
   :require_ssl: {{ and .web $context.Values.httpd.enabled }}
   {{- if and .web (or $context.Values.httpd.enabled $context.Values.foreman.trustedProxies) }}
   :trusted_proxies:
@@ -182,9 +188,15 @@ plugin only when its name is in this list.
 {{- if .Values.dynflow.enabled }}
 {{- $plugins = append $plugins "foreman-tasks" -}}
 {{- end }}
-{{- if .Values.katello.enabled }}
+{{- if or .Values.katello.enabled .Values.proxy.enabled }}
 {{- /* Katello requires foreman_remote_execution and loads it either way. */}}
-{{- $plugins = concat $plugins (list "foreman_remote_execution" "katello") -}}
+{{- $plugins = append $plugins "foreman_remote_execution" -}}
+{{- end }}
+{{- if and .Values.proxy.enabled .Values.proxy.ansible.enabled }}
+{{- $plugins = append $plugins "foreman_ansible" -}}
+{{- end }}
+{{- if .Values.katello.enabled }}
+{{- $plugins = append $plugins "katello" -}}
 {{- end }}
 {{- join " " $plugins -}}
 {{- end }}
@@ -757,4 +769,71 @@ katello-config volume. Every pod that loads Katello runs it.
   mountPath: /etc/foreman/plugins/katello.yaml
   subPath: katello.yaml
   readOnly: true
+{{- end }}
+
+{{- define "proxy.fullname" -}}
+{{- printf "%s-proxy" (include "foreman.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Default proxy URL: the DNS name of the proxy pod behind its headless Service.
+Reverse DNS of the pod IP returns the same name, which is how Foreman
+recognizes the proxy on plain HTTP.
+*/}}
+{{- define "proxy.url" -}}
+{{- .Values.proxy.url | default (printf "https://proxy.%s.%s.svc.%s:%v" (include "proxy.fullname" .) .Release.Namespace .Values.proxy.clusterDomain .Values.proxy.service.port) }}
+{{- end }}
+
+{{- define "proxy.name" -}}
+{{- .Values.proxy.name | default (urlParse (include "proxy.url" .)).hostname }}
+{{- end }}
+
+{{/* Foreman URL for the proxy: the httpd front door when it is enabled. */}}
+{{- define "proxy.foremanUrl" -}}
+{{- if .Values.proxy.foremanUrl }}
+{{- .Values.proxy.foremanUrl }}
+{{- else if .Values.httpd.enabled }}
+{{- printf "https://%s.%s.svc" (include "httpd.fullname" .) .Release.Namespace }}
+{{- else }}
+{{- printf "http://%s.%s.svc:%v" (include "foreman.fullname" .) .Release.Namespace .Values.service.port }}
+{{- end }}
+{{- end }}
+
+{{- define "proxy.clientTlsSecretName" -}}
+{{- .Values.proxy.clientTls.secretName | default (printf "%s-proxy-client-tls" .Release.Name) }}
+{{- end }}
+
+{{- define "proxy.tlsSecretName" -}}
+{{- .Values.proxy.tls.secretName | default (printf "%s-proxy-tls" .Release.Name) }}
+{{- end }}
+
+{{- define "proxy.sshSecretName" -}}
+{{- .Values.proxy.remoteExecutionSsh.secretName | default (printf "%s-proxy-ssh" .Release.Name) }}
+{{- end }}
+
+{{/*
+Feature names Foreman shows for the enabled proxy modules. The registration
+Job waits until the proxy reports all of them.
+*/}}
+{{- define "proxy.features" -}}
+{{- $features := list "Dynflow" "Logs" "Script" -}}
+{{- if .Values.proxy.ansible.enabled }}
+{{- $features = append $features "Ansible" -}}
+{{- end }}
+{{- join " " $features -}}
+{{- end }}
+
+{{- define "proxy.tlsPath" -}}
+/etc/foreman-proxy/tls
+{{- end }}
+
+{{- define "proxy.validate" -}}
+{{- if .Values.proxy.enabled }}
+{{- if not .Values.certificates.enabled }}
+{{- fail "proxy.enabled requires certificates.enabled: Foreman calls the proxy over HTTPS with its client certificate" }}
+{{- end }}
+{{- if not .Values.dynflow.enabled }}
+{{- fail "proxy.enabled requires dynflow.enabled: remote execution runs as Foreman tasks" }}
+{{- end }}
+{{- end }}
 {{- end }}

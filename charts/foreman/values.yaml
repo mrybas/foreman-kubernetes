@@ -161,6 +161,71 @@ httpd:
     limits:
       memory: 256Mi
 
+# Smart Proxy (foreman-proxy) with Remote Execution over SSH and Ansible.
+# Requires certificates.enabled and dynflow.enabled. Enabling it also enables
+# the foreman_remote_execution plugin, and foreman_ansible when ansible is on,
+# in all Foreman pods. A Helm hook Job registers the proxy in Foreman.
+proxy:
+  enabled: false
+  image:
+    repository: quay.io/foreman/foreman-proxy
+    tag: nightly
+    pullPolicy: IfNotPresent
+  # Name of the Smart Proxy in Foreman. Empty means the host name of url.
+  name: ""
+  # URL Foreman uses to reach the proxy. Empty means the pod's name in the
+  # headless proxy Service,
+  # https://proxy.<release>-foreman-proxy.<namespace>.svc.<clusterDomain>:8443.
+  # Its host name must be in the proxy server certificate.
+  url: ""
+  clusterDomain: cluster.local
+  # URL the proxy uses to reach Foreman. Empty means the httpd front door,
+  # https://<fullname>-httpd.<namespace>.svc, when
+  # httpd.enabled, else the web Service,
+  # http://<release>-foreman.<namespace>.svc:<service.port>. Its host name is
+  # added to Foreman's allowed hosts.
+  # Foreman accepts calls from the proxy (job results, Ansible reports) when it
+  # recognizes the caller as a registered proxy. Over HTTPS the proxy presents
+  # its client certificate (clientTls), whose CN or a SAN must be the host name
+  # of url; httpd verifies it against certificates.ca and passes it on. Over
+  # plain HTTP Foreman uses reverse DNS of the caller's IP, which gives the
+  # host name of the default url; plain HTTP is meant for tests.
+  foremanUrl: ""
+  # Names in client certificates allowed to call the proxy. Empty means
+  # foreman.fqdn, the name in the Foreman client certificate.
+  trustedHosts: []
+  logLevel: INFO
+  # Server certificate for the proxy HTTPS listener: a kubernetes.io/tls Secret
+  # (tls.crt, tls.key). Empty means <release>-proxy-tls. The proxy verifies
+  # client certificates against the CA bundle from certificates.ca.
+  tls:
+    secretName: ""
+  # Client certificate the proxy presents to Foreman when foremanUrl is
+  # https://: a kubernetes.io/tls Secret (tls.crt, tls.key). Empty means
+  # <release>-proxy-client-tls. Its CN or a SAN must be the host name of url.
+  # The proxy verifies Foreman's server certificate against certificates.ca.
+  clientTls:
+    secretName: ""
+  remoteExecutionSsh:
+    # Secret with the SSH key pair used to log in to hosts, keys
+    # id_rsa_foreman_proxy and id_rsa_foreman_proxy.pub. Empty means
+    # <release>-proxy-ssh. Hosts must trust the public key.
+    secretName: ""
+  ansible:
+    enabled: true
+  registration:
+    # Seconds the registration Job keeps retrying until Foreman accepts the
+    # proxy with all expected features and its SSH public key.
+    timeoutSeconds: 600
+  service:
+    port: 8443
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
 migration:
   backoffLimit: 2
   activeDeadlineSeconds: 1200

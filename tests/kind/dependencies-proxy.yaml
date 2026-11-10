@@ -1,0 +1,68 @@
+# Test fixture only: an SSH server that Remote Execution logs in to. It trusts
+# the public key from the ssh-target Secret (created by proxy-ssh.sh) for the
+# user "foreman" on port 2222, which may use sudo without a password. The image
+# starts as root to set up the user.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ssh-target
+  labels:
+    app.kubernetes.io/name: ssh-target
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ssh-target
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ssh-target
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: sshd
+          image: ghcr.io/linuxserver/openssh-server:version-10.3_p1-r2@sha256:7bd52bcb55b7cfbdae80c756403f37652b05b86b240f73a44f07ce40ac2692bf
+          env:
+            - name: USER_NAME
+              value: foreman
+            - name: PUBLIC_KEY_FILE
+              value: /keys/authorized_keys
+            - name: PASSWORD_ACCESS
+              value: "false"
+            - name: SUDO_ACCESS
+              value: "true"
+          ports:
+            - name: ssh
+              containerPort: 2222
+          readinessProbe:
+            tcpSocket:
+              port: ssh
+            periodSeconds: 5
+          volumeMounts:
+            - name: keys
+              mountPath: /keys
+              readOnly: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+      volumes:
+        - name: keys
+          secret:
+            secretName: ssh-target
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ssh-target
+  labels:
+    app.kubernetes.io/name: ssh-target
+spec:
+  selector:
+    app.kubernetes.io/name: ssh-target
+  ports:
+    - name: ssh
+      port: 2222
+      targetPort: ssh

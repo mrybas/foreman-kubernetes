@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
 # Generate a test CA, a Foreman client certificate, a Candlepin server
-# certificate and optionally an HTTPS server certificate with openssl, and
-# store them as the Secrets the foreman Helm chart reads.
+# certificate and optionally an HTTPS server certificate and Smart Proxy
+# certificates with openssl, and store them as the Secrets the foreman Helm
+# chart reads.
 #
 # Usage: certificates.sh NAMESPACE RELEASE CLIENT_CN [SERVER_SAN...]
 #
 # Secrets created or updated in NAMESPACE:
-#   <release>-ca             Opaque: ca.crt
-#   <release>-client-tls     kubernetes.io/tls: tls.crt, tls.key, ca.crt
-#   <release>-candlepin-ca   kubernetes.io/tls: the CA itself (tls.crt, tls.key)
-#   <release>-candlepin-tls  kubernetes.io/tls: tls.crt, tls.key, ca.crt; SANs
-#                            the Candlepin Service name, its in-cluster DNS
-#                            names and localhost
-#   <release>-server-tls     kubernetes.io/tls: tls.crt, tls.key, ca.crt (only
-#                            with SERVER_SAN; the first SAN is also the CN)
+#   <release>-ca                Opaque: ca.crt
+#   <release>-client-tls        kubernetes.io/tls: tls.crt, tls.key, ca.crt
+#   <release>-candlepin-ca      kubernetes.io/tls: the CA itself (tls.crt, tls.key)
+#   <release>-candlepin-tls     kubernetes.io/tls: tls.crt, tls.key, ca.crt; SANs
+#                               the Candlepin Service name, its in-cluster
+#                               DNS names and localhost
+#   <release>-server-tls        kubernetes.io/tls: tls.crt, tls.key, ca.crt (only
+#                               with SERVER_SAN; the first SAN is also the CN)
+#   <release>-proxy-tls         kubernetes.io/tls: tls.crt, tls.key, ca.crt;
+#   <release>-proxy-client-tls  Smart Proxy server and client certificates,
+#                               only when PROXY_SANS is set (space separated
+#                               DNS names, the first is the CN)
 #
 # The Candlepin Service is named <fullname>-candlepin, as the chart names it.
 # FULLNAME defaults to the chart's <release>-foreman; set it when the release
@@ -100,7 +105,8 @@ EOF
   openssl req -x509 -new -key "${dir}/ca.key" -config "${dir}/ca.cnf" -days "${days}" \
     -sha256 -out "${dir}/ca.crt"
   # A new CA invalidates every certificate it did not sign.
-  rm -f "${dir}"/client.names "${dir}"/candlepin.names "${dir}"/server.names
+  rm -f "${dir}"/client.names "${dir}"/candlepin.names "${dir}"/server.names \
+    "${dir}"/proxy.names "${dir}"/proxy-client.names
 fi
 
 issue client "${client_cn}" clientAuth "${client_cn}"
@@ -132,5 +138,17 @@ apply_secret "${release}-candlepin-tls" --type=kubernetes.io/tls \
 if [[ ${#server_sans[@]} -gt 0 ]]; then
   apply_secret "${release}-server-tls" --type=kubernetes.io/tls \
     --from-file=tls.crt="${dir}/server.crt" --from-file=tls.key="${dir}/server.key" \
+    --from-file=ca.crt="${dir}/ca.crt"
+fi
+
+if [[ -n "${PROXY_SANS:-}" ]]; then
+  read -r -a proxy_sans <<<"${PROXY_SANS}"
+  issue proxy "${proxy_sans[0]}" serverAuth "${proxy_sans[@]}"
+  issue proxy-client "${proxy_sans[0]}" clientAuth "${proxy_sans[@]}"
+  apply_secret "${release}-proxy-tls" --type=kubernetes.io/tls \
+    --from-file=tls.crt="${dir}/proxy.crt" --from-file=tls.key="${dir}/proxy.key" \
+    --from-file=ca.crt="${dir}/ca.crt"
+  apply_secret "${release}-proxy-client-tls" --type=kubernetes.io/tls \
+    --from-file=tls.crt="${dir}/proxy-client.crt" --from-file=tls.key="${dir}/proxy-client.key" \
     --from-file=ca.crt="${dir}/ca.crt"
 fi

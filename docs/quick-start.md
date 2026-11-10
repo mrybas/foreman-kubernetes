@@ -2,9 +2,9 @@
 
 This experimental, unsupported milestone installs a single core Foreman web pod
 backed by PostgreSQL. Optionally it adds Dynflow with the Foreman Tasks plugin
-for background tasks, Pulp, Candlepin, an HTTPS front door, and the Katello
-plugin. It does not enable Smart Proxy features, high availability, or
-production ingress.
+for background tasks, Pulp, Candlepin, an HTTPS front door, the Katello
+plugin, and a Smart Proxy for Remote Execution and Ansible. It does not enable
+other Smart Proxy features, high availability, or production ingress.
 
 ## Dependencies
 
@@ -35,12 +35,13 @@ existing cluster with the same name. Override `KIND_CLUSTER_NAME` consistently
 across commands if that name is already in use. To use Docker explicitly, set
 `KIND_EXPERIMENTAL_PROVIDER=docker` on each cluster command.
 
-`test` installs disposable PostgreSQL and Valkey, creates test credentials and
-test certificates, and installs the chart with the HTTPS front door, Dynflow,
-Pulp, Candlepin and Katello enabled. Helm waits for the migration Jobs, the
-ready Deployments and the Job that registers Pulp in Foreman.
+`test` installs disposable PostgreSQL and Valkey, creates test credentials,
+test certificates and a test SSH key, and installs the chart with the HTTPS
+front door, Dynflow, Pulp, Candlepin, Katello and the Smart Proxy enabled.
+Helm waits for the migration Jobs, the ready Deployments and the Jobs that
+register Pulp and the Smart Proxy in Foreman.
 Then [pytest-helm-charts](https://github.com/giantswarm/pytest-helm-charts) connects
-to that cluster and runs the 48 tests in `tests/integration`. For Foreman: the web
+to that cluster and runs the 55 tests in `tests/integration`. For Foreman: the web
 Deployment is available, the API reports an active database, the seeded
 administrator can query the users API, the web pod has the CA bundle from its
 Secret, and the `foreman` user in the web pod can read the client key and verify
@@ -62,7 +63,9 @@ HTTPS, that a client certificate from the CA is accepted and a self-signed one
 is rejected, that only the httpd pods of the release can connect to the
 Foreman web port, and that the Pulp API through httpd accepts the Foreman
 client certificate as the Pulp administrator and refuses clients without it.
-The Katello tests are described in [Enable Katello](#enable-katello).
+The Katello and Smart Proxy tests are described in
+[Enable Katello](#enable-katello) and
+[Run remote execution jobs](#run-remote-execution-jobs).
 Pytest prints the test count and writes `artifacts/junit.xml` for CI reporting.
 The optional in-cluster smoke test can also be run with `helm test`.
 
@@ -135,6 +138,69 @@ recurring tasks. Kubernetes restarts it and it then runs normally.
 `foreman-tasks` plugin is loaded, that the API ping reports the Valkey cache as
 `ok`, and that a scheduled report runs as a task that ends in state `stopped`
 with result `success`.
+
+## Run remote execution jobs
+
+Set `proxy.enabled=true` to add a Smart Proxy (`foreman-proxy`) that runs
+Remote Execution jobs over SSH and Ansible. It needs `certificates.enabled` and
+`dynflow.enabled`. It also enables the `foreman_remote_execution` and
+`foreman_ansible` plugins in every Foreman pod (`proxy.ansible.enabled=false`
+leaves out Ansible).
+
+The proxy runs as one pod, because it keeps running jobs in memory and loses
+them on restart. It listens on HTTPS port 8443. Foreman connects to it with its
+client certificate, and the proxy accepts only the names in
+`proxy.trustedHosts` (default `foreman.fqdn`). Create more Secrets:
+
+| Secret | Type and keys | Contents |
+| --- | --- | --- |
+| `foreman-proxy-tls` | `kubernetes.io/tls`: `tls.crt`, `tls.key` | Proxy server certificate. Its subject alternative names (SANs) must include the host name of `proxy.url` |
+| `foreman-proxy-client-tls` | `kubernetes.io/tls`: `tls.crt`, `tls.key` | Proxy client certificate, needed when `proxy.foremanUrl` is `https://`. Its CN or a SAN must be the host name of `proxy.url`, and its issuer must be in the `certificates.ca` bundle |
+| `foreman-proxy-ssh` | `id_rsa_foreman_proxy`, `id_rsa_foreman_proxy.pub` | SSH key pair the proxy logs in to hosts with |
+
+By default the proxy URL is
+`https://proxy.<release>-foreman-proxy.<namespace>.svc.cluster.local:8443`, the
+DNS name of the proxy pod behind its headless Service. The proxy sends job
+results back to Foreman at `proxy.foremanUrl`. Foreman accepts these calls only
+from a registered proxy:
+
+- With the [HTTPS front door](#https-front-door) (`httpd.enabled=true`) the
+  default is `https://<fullname>-httpd.<namespace>.svc`. The proxy presents its
+  client certificate, httpd verifies it and passes it on, and Foreman matches
+  its CN or SANs with the host name of the proxy URL. The proxy verifies httpd
+  against the `certificates.ca` bundle.
+- Without it the default is the Foreman web Service over plain HTTP, and
+  Foreman accepts the calls because reverse DNS of the proxy pod IP gives the
+  host name of the proxy URL. Plain HTTP inside the cluster is meant for
+  tests.
+
+The host name of `proxy.foremanUrl` is added to Foreman's allowed host names.
+
+After every install and upgrade a Job registers the proxy in Foreman, or
+updates its URL, and then refreshes it, which stores the proxy's features and
+its SSH public key. Global Registration installs that key on hosts. The Job
+runs `bin/rails runner` in the Foreman image against the database, as the
+Katello Pulp registration does, so it needs no Foreman credentials. It adds
+the proxy to every organization and location that exists at that time and
+waits until Foreman lists the Ansible, Dynflow, Logs and Script features and
+the public key. Organizations created later need the proxy
+assigned by hand (or another `helm upgrade`), because Remote Execution uses
+only proxies in the host's organization and location. With Katello this proxy
+is separate from the Pulp Smart Proxy that Katello registers.
+
+Hosts must trust the public key, for root or for the user in the
+`remote_execution_ssh_user` host parameter. For hosts that Foreman cannot
+resolve by name, set the host parameter `remote_execution_connect_by_ip` to
+`true`.
+
+`make test` checks that the proxy is registered with those features and
+without Pulp, that Foreman stores the public key from the Secret, that it calls Foreman through httpd with a client certificate
+named after its URL host, that a feature refresh works, that the proxy serves
+the public key from the Secret,
+and that a `Run Command - Script Default` job with `uname -a` succeeds on an
+SSH server fixture. To run the same job against another machine that trusts
+the key, set `REX_TARGET_IP` (and optionally `REX_TARGET_PORT`,
+`REX_TARGET_USER`, `REX_TARGET_NAME`) when running pytest.
 
 ## Enable Pulp
 

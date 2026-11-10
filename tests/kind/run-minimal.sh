@@ -43,11 +43,16 @@ case "${1:-}" in
       --from-literal=SEED_ADMIN_USER=admin --from-literal=SEED_ADMIN_PASSWORD=foreman-test \
       --dry-run=client --output=yaml | kubectl --context "${context}" apply --filename=-
     # Test CA, Foreman client certificate (CN is the FQDN), Candlepin server
-    # certificate and the httpd server certificate for the FQDN and the
-    # in-cluster Service names.
-    KUBE_CONTEXT="${context}" "${repo_root}/tests/kind/certificates.sh" \
+    # certificate, the httpd server certificate for the FQDN and the
+    # in-cluster Service names, and the Smart Proxy server and client
+    # certificates for the proxy pod's DNS name.
+    PROXY_SANS="proxy.${release}-foreman-proxy.${namespace}.svc.cluster.local" \
+      KUBE_CONTEXT="${context}" "${repo_root}/tests/kind/certificates.sh" \
       "${namespace}" "${release}" foreman.test foreman.test "${release}-foreman-httpd" \
       "${release}-foreman-httpd.${namespace}.svc" "${release}-foreman-httpd.${namespace}.svc.cluster.local"
+    # Smart Proxy SSH key and an SSH server fixture that trusts it.
+    SSH_TARGET=1 KUBE_CONTEXT="${context}" "${repo_root}/tests/kind/proxy-ssh.sh" \
+      "${namespace}" "${release}"
     # Valkey shared by Dynflow, the Rails cache and Pulp.
     kubectl --context "${context}" --namespace "${namespace}" apply \
       --filename "${repo_root}/tests/kind/dependencies-valkey.yaml"
@@ -82,7 +87,7 @@ case "${1:-}" in
       --set certificates.enabled=true --set httpd.enabled=true \
       --set 'foreman.trustedProxies={10.244.0.0/16}' \
       --set dynflow.enabled=true --set pulp.enabled=true --set candlepin.enabled=true \
-      --set katello.enabled=true \
+      --set katello.enabled=true --set proxy.enabled=true \
       --set-string pulp.settings.smartProxyPulpUrl="https://${release}-foreman-httpd.${namespace}.svc" \
       --set-string pulp.settings.contentOrigin=https://foreman.test \
       --wait --wait-for-jobs --timeout 30m

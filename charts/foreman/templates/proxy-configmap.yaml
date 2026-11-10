@@ -1,0 +1,87 @@
+{{- include "proxy.validate" . }}
+{{- if .Values.proxy.enabled }}
+{{- /*
+Settings ported from foremanctl src/roles/foreman_proxy. The image ships every
+module in settings.d with :enabled: false; the files below turn on the ones
+this chart uses. Logs go to stdout instead of the journal.
+*/}}
+{{- $tls := include "proxy.tlsPath" . }}
+{{- $foremanUrl := include "proxy.foremanUrl" . }}
+{{- $url := urlParse (include "proxy.url" .) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "proxy.fullname" . }}
+  labels:
+    {{- include "foreman.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+data:
+  settings.yml: |
+    ---
+    :settings_directory: /etc/foreman-proxy/settings.d
+    :foreman_url: {{ $foremanUrl | quote }}
+    # Host names accepted in the HTTP Host header.
+    :permitted_hosts:
+      - {{ $url.hostname | quote }}
+    # Client certificate names allowed to call the proxy.
+    :trusted_hosts:
+      {{- range (.Values.proxy.trustedHosts | default (list .Values.foreman.fqdn)) }}
+      - {{ . | quote }}
+      {{- end }}
+    :https_port: {{ .Values.proxy.service.port }}
+    :ssl_ca_file: {{ $tls }}/ca.crt
+    :ssl_certificate: {{ $tls }}/server.crt
+    :ssl_private_key: {{ $tls }}/server.key
+    {{- if hasPrefix "https://" $foremanUrl }}
+    # The proxy's own client certificate (proxy.clientTls). Foreman matches its
+    # CN or SANs with the host name of the registered proxy URL.
+    :foreman_ssl_ca: {{ $tls }}/ca.crt
+    :foreman_ssl_cert: {{ $tls }}/client.crt
+    :foreman_ssl_key: {{ $tls }}/client.key
+    {{- end }}
+    :bind_host: '*'
+    :log_level: {{ .Values.proxy.logLevel | upper | quote }}
+    :log_file: STDOUT
+    :log_buffer: 2000
+    :log_buffer_errors: 1000
+  logs.yml: |
+    ---
+    :enabled: https
+  dynflow.yml: |
+    ---
+    :enabled: https
+    # Empty: plans are kept in memory, as in foremanctl. Jobs running on the
+    # proxy are lost when the pod restarts.
+    :database:
+  remote_execution_ssh.yml: |
+    ---
+    :enabled: https
+    :ssh_identity_key_file: /etc/foreman-proxy/ssh/id_rsa_foreman_proxy
+    :local_working_dir: /var/tmp
+    :remote_working_dir: /var/tmp
+    :socket_working_dir: /var/tmp
+    :mode: ssh
+  {{- if .Values.proxy.ansible.enabled }}
+  ansible.yml: |
+    ---
+    :enabled: https
+    :ansible_dir: /usr/share/foreman-proxy
+    :ansible_environment_file: /etc/foreman-proxy/ansible.env
+    :working_dir: /var/tmp
+  ansible.env: |
+    export ANSIBLE_CALLBACKS_ENABLED="theforeman.foreman.foreman"
+    export ANSIBLE_LOCAL_TEMP="/tmp"
+    export ANSIBLE_HOST_KEY_CHECKING="False"
+    export ANSIBLE_ROLES_PATH="/etc/ansible/roles:/usr/share/ansible/roles"
+    export ANSIBLE_COLLECTIONS_PATH="/etc/ansible/collections:/usr/share/ansible/collections"
+    export FOREMAN_URL={{ $foremanUrl | quote }}
+    {{- if hasPrefix "https://" $foremanUrl }}
+    export FOREMAN_SSL_CERT="{{ $tls }}/client.crt"
+    export FOREMAN_SSL_KEY="{{ $tls }}/client.key"
+    export FOREMAN_SSL_VERIFY="{{ $tls }}/ca.crt"
+    {{- end }}
+    export ANSIBLE_SSH_ARGS="-C -o ControlMaster=auto -o ControlPersist=60s -o ServerAliveInterval=15 -o ServerAliveCountMax=3"
+  {{- end }}
+  register.rb: |
+    {{- .Files.Get "files/proxy-register.rb" | nindent 4 }}
+{{- end }}

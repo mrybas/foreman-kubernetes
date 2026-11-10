@@ -1,0 +1,95 @@
+{{- if .Values.proxy.enabled }}
+{{- /*
+Registers the proxy in Foreman after every install and upgrade: creates it,
+or updates its URL, and always refreshes its features and SSH public key. It
+runs the proxy ConfigMap's register.rb with `bin/rails runner` in the Foreman
+image, against the database, like the Katello Pulp registration Job, so it
+needs no Foreman credentials. The ConfigMap is a regular release resource, so
+it exists before post hooks run.
+*/}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "proxy.fullname" . }}-register-{{ .Release.Revision }}
+  labels:
+    {{- include "foreman.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy-registration
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: {{ add .Values.proxy.registration.timeoutSeconds 300 }}
+  template:
+    metadata:
+      labels:
+        {{- include "foreman.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: proxy-registration
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 994
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 994
+        runAsNonRoot: true
+        runAsUser: 994
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.katello.enabled }}
+      initContainers:
+        {{- include "katello.initContainer" . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: register
+          image: {{ include "foreman.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          workingDir: /usr/share/foreman
+          command:
+            - bin/rails
+            - runner
+            - /etc/foreman-proxy-registration/register.rb
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            runAsGroup: 994
+            runAsUser: 994
+          env:
+            {{- include "foreman.env" . | nindent 12 }}
+            - name: PROXY_NAME
+              value: {{ include "proxy.name" . | quote }}
+            - name: PROXY_URL
+              value: {{ include "proxy.url" . | quote }}
+            - name: PROXY_FEATURES
+              value: {{ include "proxy.features" . | quote }}
+            - name: TIMEOUT_SECONDS
+              value: {{ .Values.proxy.registration.timeoutSeconds | quote }}
+          volumeMounts:
+            {{- include "foreman.volumeMounts" . | nindent 12 }}
+            - name: script
+              mountPath: /etc/foreman-proxy-registration/register.rb
+              subPath: register.rb
+              readOnly: true
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: configuration
+          configMap:
+            name: {{ include "foreman.configName" . }}
+        - name: temporary
+          emptyDir: {}
+        {{- include "foreman.certificatesVolume" . | nindent 8 }}
+        {{- if .Values.katello.enabled }}
+        {{- include "katello.volume" . | nindent 8 }}
+        {{- end }}
+        - name: script
+          configMap:
+            name: {{ include "proxy.fullname" . }}
+{{- end }}
