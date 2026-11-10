@@ -156,7 +156,7 @@ def target_host(kube_cluster, api, namespace, smart_proxy):  # noqa: F811
         name = os.environ.get("REX_TARGET_NAME", "rex-target.test")
     else:
         service = kube_cluster.kubectl("get service ssh-target", namespace=namespace)
-        ip, port, user, name = service["spec"]["clusterIP"], "2222", "foreman", "ssh-target.test"
+        ip, port, user, name = service["spec"]["clusterIP"], "2222", "abc", "ssh-target.test"
     parameters = [
         {"name": "remote_execution_connect_by_ip", "value": "true", "parameter_type": "boolean"},
         {"name": "remote_execution_ssh_port", "value": port, "parameter_type": "integer"},
@@ -172,6 +172,8 @@ def target_host(kube_cluster, api, namespace, smart_proxy):  # noqa: F811
         "location_id": smart_proxy["locations"][0]["id"],
         "host_parameters_attributes": parameters,
     }})
+    # Run the job as the SSH user. The fixture's user cannot switch to root.
+    host["rex_user"] = user
     return host
 
 
@@ -185,6 +187,7 @@ def test_remote_execution_job_succeeds(api, target_host):
             "targeting_type": "static_query",
             "search_query": f'name = {target_host["name"]}',
             "inputs": {"command": "uname -a"},
+            "effective_user": target_host["rex_user"],
         }})
     assert status == 201
 

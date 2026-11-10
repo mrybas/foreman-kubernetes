@@ -34,6 +34,7 @@ spec:
       hostAliases:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with include "foreman.topologySpread" (dict "context" . "component" "web" "replicas" .Values.replicaCount) }}{{ . | nindent 6 }}{{ end }}
       {{- if or .Values.katello.enabled .Values.foreman.oauth.existingSecret }}
       initContainers:
         {{- if .Values.katello.enabled }}
@@ -77,6 +78,15 @@ spec:
             - name: http
               containerPort: 3000
               protocol: TCP
+          # Keep accepting requests until the removal of this pod from the
+          # Service endpoints has reached every node; Puma then finishes the
+          # running requests on SIGTERM.
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - sleep
+                  - "10"
           env:
             {{- include "foreman.env" . | nindent 12 }}
           volumeMounts:
@@ -89,9 +99,12 @@ spec:
               port: http
             periodSeconds: 5
             failureThreshold: 60
+          # The login page needs Puma and the database. The API ping would
+          # also wait for Candlepin and Pulp when Katello is enabled, so a
+          # Candlepin restart would take every web pod out of the Service.
           readinessProbe:
             httpGet:
-              path: /api/v2/ping
+              path: /users/login
               port: http
               httpHeaders:
                 - name: Host

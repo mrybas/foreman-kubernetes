@@ -17,8 +17,14 @@ UPGRADE_FROM_IMAGE_DIGEST ?= sha256:940408adc6cdf0c2996e61d0880095f10f14813be1bf
 UPGRADE_TO_IMAGE_TAG ?= nightly
 UPGRADE_TO_IMAGE_DIGEST ?=
 export UPGRADE_FROM_IMAGE_DIGEST UPGRADE_TO_IMAGE_TAG UPGRADE_TO_IMAGE_DIGEST
+# Kind cluster configuration for setup-kind; test-disruption needs
+# tests/kind/cluster-disruption.yaml (two worker nodes).
+KIND_CONFIG ?=
+export KIND_CONFIG
+# Helm options test-disruption adds to the test installation.
+DISRUPTION_HELM_ARGS ?= --set replicaCount=2 --set httpd.replicas=2 --set dynflow.worker.replicas=2
 
-.PHONY: lint setup-test-env test-static setup-kind test test-backup test-upgrade teardown-kind diagnostics
+.PHONY: lint setup-test-env test-static setup-kind test test-backup test-upgrade test-disruption teardown-kind diagnostics
 lint:
 	@find . -type f -name Chart.yaml -not -path './.git/*' -exec sh -c 'for chart do helm lint "$${chart%/Chart.yaml}" || exit $$?; done' sh {} +
 
@@ -44,6 +50,10 @@ test-backup:
 test-upgrade:
 	tests/kind/run-minimal.sh deploy --set-string image.digest=$(UPGRADE_FROM_IMAGE_DIGEST)
 	$(TEST_PYTHON) -m pytest -v tests/upgrade tests/integration -m "not backup" --junitxml=artifacts/junit.xml
+
+test-disruption:
+	tests/kind/run-minimal.sh deploy $(DISRUPTION_HELM_ARGS)
+	$(TEST_PYTHON) -m pytest -v -s -m disruption tests/disruption --junitxml=artifacts/junit.xml
 
 diagnostics:
 	tests/kind/run-minimal.sh diagnostics

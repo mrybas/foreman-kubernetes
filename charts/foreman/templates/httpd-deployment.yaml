@@ -29,6 +29,9 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with include "foreman.topologySpread" (dict "context" . "component" "httpd" "replicas" .Values.httpd.replicas) }}{{ . | nindent 6 }}{{ end }}
+      # Time for the preStop hook and the requests that are still running.
+      terminationGracePeriodSeconds: 60
       containers:
         - name: httpd
           image: {{ include "httpd.image" . }}
@@ -52,6 +55,20 @@ spec:
             - name: https
               containerPort: 8443
               protocol: TCP
+          # SIGTERM stops httpd at once and cuts running requests. Instead,
+          # wait until the removal of this pod from the Service endpoints has
+          # reached every node, then stop gracefully: httpd finishes the
+          # running requests and exits.
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - >-
+                    sleep 10;
+                    httpd -f /etc/httpd-foreman/httpd.conf -k graceful-stop;
+                    while kill -0 1 2>/dev/null; do sleep 1; done
           readinessProbe:
             httpGet:
               path: /pub/

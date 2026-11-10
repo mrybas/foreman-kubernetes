@@ -9,6 +9,12 @@ spec:
   template:
     spec:
       restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: create
           image: postgres:16-alpine
@@ -19,6 +25,11 @@ spec:
               value: postgres
             - name: PGPASSWORD
               value: postgres-test
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           command:
             - /bin/sh
             - -ec

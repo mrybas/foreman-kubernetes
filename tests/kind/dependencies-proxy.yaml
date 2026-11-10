@@ -1,7 +1,8 @@
 # Test fixture only: an SSH server that Remote Execution logs in to. It trusts
 # the public key from the ssh-target Secret (created by proxy-ssh.sh) for the
-# user "foreman" on port 2222, which may use sudo without a password. The image
-# starts as root to set up the user.
+# image's unprivileged user "abc" on port 2222. sshd runs as that user, with a
+# host key generated at start, so the pod meets the restricted Pod Security
+# profile; it can only log in that user.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -19,21 +20,41 @@ spec:
         app.kubernetes.io/name: ssh-target
     spec:
       automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 911
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: sshd
           image: ghcr.io/linuxserver/openssh-server:version-10.3_p1-r2@sha256:7bd52bcb55b7cfbdae80c756403f37652b05b86b240f73a44f07ce40ac2692bf
-          env:
-            - name: USER_NAME
-              value: foreman
-            - name: PUBLIC_KEY_FILE
-              value: /keys/authorized_keys
-            - name: PASSWORD_ACCESS
-              value: "false"
-            - name: SUDO_ACCESS
-              value: "true"
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              ssh-keygen -q -t ed25519 -N "" -f /run/sshd/host_ed25519
+              cat >/run/sshd/sshd_config <<EOF
+              Port 2222
+              HostKey /run/sshd/host_ed25519
+              PidFile none
+              AuthorizedKeysFile /keys/authorized_keys
+              StrictModes no
+              PasswordAuthentication no
+              KbdInteractiveAuthentication no
+              UsePAM no
+              SshdSessionPath /usr/lib/ssh/sshd-session.pam
+              SshdAuthPath /usr/lib/ssh/sshd-auth.pam
+              EOF
+              exec /usr/sbin/sshd.pam -D -e -f /run/sshd/sshd_config
           ports:
             - name: ssh
               containerPort: 2222
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           readinessProbe:
             tcpSocket:
               port: ssh
@@ -42,6 +63,8 @@ spec:
             - name: keys
               mountPath: /keys
               readOnly: true
+            - name: run
+              mountPath: /run/sshd
           resources:
             requests:
               cpu: 10m
@@ -52,6 +75,8 @@ spec:
         - name: keys
           secret:
             secretName: ssh-target
+        - name: run
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

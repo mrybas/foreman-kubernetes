@@ -1,0 +1,8 @@
+# Kind cluster for make test-disruption: the fixtures run on the control-plane
+# node, the release on two workers, one of which the test drains.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker

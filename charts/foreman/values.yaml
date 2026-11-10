@@ -1,4 +1,27 @@
+# Foreman web replicas. Web pods keep no local state: sessions are stored in
+# the database. Other replica counts are under their component; the Dynflow
+# orchestrator, Candlepin and the Smart Proxy always run one replica.
 replicaCount: 1
+
+# A PodDisruptionBudget (PDB) for each workload that runs more than one
+# replica, so that draining a node evicts its replicas one at a time: Foreman
+# web, httpd, the Dynflow workers, and the Pulp Deployments with S3 storage or
+# pulp.storage.colocate=false. With colocated filesystem storage every Pulp pod
+# must run on one node, so a budget would block the drain of that node.
+# unhealthyPodEvictionPolicy is AlwaysAllow, so pods that are not ready never
+# block a drain.
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+# Spread the replicas of the same workloads across nodes. ScheduleAnyway
+# makes it a preference: pods still start when there are fewer nodes than
+# replicas.
+topologySpread:
+  enabled: true
+  topologyKey: kubernetes.io/hostname
+  maxSkew: 1
+  whenUnsatisfiable: ScheduleAnyway
 
 # Every image value below takes repository, tag and digest. A digest
 # (sha256:...) takes precedence over the tag; pin digests for reproducible

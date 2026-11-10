@@ -467,6 +467,68 @@ It checks that the web and Dynflow pods resolve `foreman.test` to httpd and
 that the Pulp Smart Proxy can be registered under
 `https://foreman.test/pulp/api/v3/smart_proxy`.
 
+## Replicas and disruptions
+
+Workloads without local state can run several replicas. The others always run
+one, so a node failure or drain interrupts them until Kubernetes starts a
+replacement pod.
+
+| Component | Replicas | When its node is drained or lost |
+| --- | --- | --- |
+| Foreman web | `replicaCount` | The other replicas keep serving. Sessions are stored in the database |
+| httpd | `httpd.replicas` | The other replicas keep serving |
+| Dynflow workers | `dynflow.worker.replicas`, `dynflow.hostsQueue.replicas` | The other replicas keep running tasks. Sidekiq waits up to 25 seconds for running jobs |
+| Dynflow orchestrator | always 1 | No new task starts until the replacement is ready |
+| Candlepin | always 1 | Candlepin is limited to a single replica because of its embedded messaging broker. Requests that need it wait or fail until the replacement is ready, about 30 to 50 seconds in Kind |
+| Smart Proxy | always 1 | It keeps running jobs in memory. No job runs until the replacement is ready |
+| Pulp api, content, worker | `pulp.api.replicas`, `pulp.content.replicas`, `pulp.worker.replicas` | With ReadWriteOnce storage all Pulp pods run on one node. Content and the Pulp API are unavailable until a pod can mount the volume again; with storage that is local to the node, until the node is back |
+
+For every workload with more than one replica the chart adds a
+PodDisruptionBudget (PDB) that lets `kubectl drain` and other voluntary
+evictions stop one pod at a time, and spreads the replicas across nodes when
+the cluster has enough of them (`podDisruptionBudget` and `topologySpread` in
+`charts/foreman/values.yaml`). Pulp gets neither while its storage is a
+colocated volume (filesystem storage with `pulp.storage.colocate` true),
+because its pods must share one node. A drain waits until the replacement
+pod is ready; on a single-node cluster with more than one replica it cannot
+finish. There, set `podDisruptionBudget.enabled=false` or run one replica. Web
+and httpd pods wait 10 seconds after they are asked to stop, so that no new
+request reaches them, and then finish the running requests. A web pod is
+ready when it serves the login page. The API ping is not used for this,
+because with Katello it waits for Candlepin and Pulp, so their restart would
+remove every web pod from the Service. Each web process keeps 4 database
+connections more than it has Puma threads, as foremanctl does, for threads
+such as the Katello event daemon. With Katello, every web pod runs its own
+event daemon; whether several daemons handle an event twice has not been
+tested.
+
+Every pod of the chart, including the hook Jobs, their init containers and the
+`helm test` pod, meets the `restricted`
+[Pod Security Standard](https://kubernetes.io/docs/concepts/security/pod-security-standards/).
+`make test` installs the chart and the test fixtures into a namespace
+labelled `pod-security.kubernetes.io/enforce=restricted`.
+
+`make test-disruption` drains a node under load. It needs a Kind cluster with
+a control-plane node and two workers:
+
+```console
+make setup-kind KIND_CONFIG=tests/kind/cluster-disruption.yaml
+make test-disruption
+make teardown-kind
+```
+
+It installs the chart as `make test` does, with two web, httpd and Dynflow
+worker replicas (`DISRUPTION_HELM_ARGS`), and keeps PostgreSQL and Valkey on the
+control-plane node. A pod on that node requests `/api/v2/status` as the
+administrator through the httpd Service, about four times a second, while
+`kubectl drain` empties the worker that runs Pulp. Every request must succeed
+until the node is uncordoned and every Deployment is available again. Without
+Katello the pod also requests `/api/v2/ping`, which must succeed too. With
+Katello it requests the Pulp status instead, and then deletes the Candlepin
+pod while a second pod requests `/api/v2/ping` and `/rhsm/status`. The Pulp and
+Candlepin results are written to `artifacts/disruption-report.json`, not
+asserted.
+
 ## Upgrade
 
 Tags such as `nightly` move. To know which image runs before and after an

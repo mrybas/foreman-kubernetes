@@ -11,6 +11,16 @@ export KIND_EXPERIMENTAL_PROVIDER="${KIND_EXPERIMENTAL_PROVIDER:-podman}"
 export KUBECONFIG="${repo_root}/artifacts/kubeconfig"
 ownership_file="${repo_root}/artifacts/kind-cluster"
 
+# In a cluster with worker nodes (KIND_CONFIG), keep the PostgreSQL and Valkey
+# fixtures on the control-plane node, so that draining a worker does not lose
+# their data. Their first pod is replaced before anything uses them.
+pin_fixture() {
+  if [[ -n "$(kubectl --context "${context}" get nodes --selector '!node-role.kubernetes.io/control-plane' --output name)" ]]; then
+    kubectl --context "${context}" --namespace "${namespace}" patch "deployment/$1" --type merge --patch \
+      '{"spec":{"template":{"spec":{"nodeSelector":{"node-role.kubernetes.io/control-plane":""},"tolerations":[{"key":"node-role.kubernetes.io/control-plane","effect":"NoSchedule"}]}}}}'
+  fi
+}
+
 require_cluster() {
   if [[ ! -f "${ownership_file}" ]] || [[ "$(cat "${ownership_file}")" != "${cluster_name}" ]]; then
     echo 'Run make setup-kind first; refusing to modify an unowned cluster.' >&2
@@ -26,15 +36,20 @@ case "${1:-}" in
       exit 1
     fi
     kind create cluster --name "${cluster_name}" --image "${node_image}" \
-      --kubeconfig "${KUBECONFIG}" --wait 120s
+      ${KIND_CONFIG:+--config "${KIND_CONFIG}"} --kubeconfig "${KUBECONFIG}" --wait 120s
     printf '%s\n' "${cluster_name}" > "${ownership_file}"
     ;;
   deploy)
     require_cluster
     kubectl --context "${context}" create namespace "${namespace}" \
       --dry-run=client --output=yaml | kubectl --context "${context}" apply --filename=-
+    # Every pod of the release and of the fixtures must meet the restricted
+    # Pod Security profile.
+    kubectl --context "${context}" label namespace "${namespace}" --overwrite \
+      pod-security.kubernetes.io/enforce=restricted pod-security.kubernetes.io/warn=restricted
     kubectl --context "${context}" --namespace "${namespace}" apply \
       --filename "${repo_root}/tests/kind/dependencies.yaml"
+    pin_fixture postgresql
     kubectl --context "${context}" --namespace "${namespace}" rollout status deployment/postgresql --timeout=180s
     kubectl --context "${context}" --namespace "${namespace}" create secret generic foreman-runtime \
       --from-literal=DATABASE_URL='postgresql://foreman:foreman-test@postgresql:5432/foreman' \
@@ -58,6 +73,7 @@ case "${1:-}" in
     # Valkey shared by Dynflow, the Rails cache and Pulp.
     kubectl --context "${context}" --namespace "${namespace}" apply \
       --filename "${repo_root}/tests/kind/dependencies-valkey.yaml"
+    pin_fixture valkey
     kubectl --context "${context}" --namespace "${namespace}" rollout status deployment/valkey --timeout=180s
     # Dynflow: Valkey URL in the runtime Secret.
     kubectl --context "${context}" --namespace "${namespace}" patch secret foreman-runtime \

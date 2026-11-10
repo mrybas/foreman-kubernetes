@@ -33,6 +33,15 @@ spec:
       labels:
         app.kubernetes.io/name: postgresql
     spec:
+      # The restricted Pod Security profile: 70 is the postgres user of the
+      # Alpine image.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: postgresql
           image: postgres:16-alpine
@@ -42,6 +51,14 @@ spec:
           env:
             - name: POSTGRES_PASSWORD
               value: postgres-test
+            # A directory initdb creates, so it owns it.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           readinessProbe:
             exec:
               command:

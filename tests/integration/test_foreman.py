@@ -60,8 +60,7 @@ def api_url(kube_cluster, namespace, workload):
 
 def test_web_deployment_is_available(kube_cluster, namespace, workload):
     deployment = kube_cluster.kubectl(f"get deployment {workload}", namespace=namespace)
-    assert deployment["spec"]["replicas"] == 1
-    assert deployment["status"]["availableReplicas"] == 1
+    assert deployment["status"]["availableReplicas"] == deployment["spec"]["replicas"] >= 1
     assert deployment["status"]["observedGeneration"] == deployment["metadata"]["generation"]
 
 

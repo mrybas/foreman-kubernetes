@@ -196,8 +196,12 @@ Files: ca.crt, client.crt, client.key.
   value: {{ .Values.foreman.puma.threadsMin | quote }}
 - name: FOREMAN_PUMA_THREADS_MAX
   value: {{ .Values.foreman.puma.threadsMax | quote }}
+{{- /*
+Database connections per process: one per Puma thread plus 4 for threads that
+run beside them, such as the Katello event daemon, as foremanctl sets it.
+*/}}
 - name: FOREMAN_DATABASE_POOL
-  value: {{ .databasePool | default .Values.foreman.puma.threadsMax | quote }}
+  value: {{ .databasePool | default (add .Values.foreman.puma.threadsMax 4) | quote }}
 - name: DATABASE_URL
   valueFrom:
     secretKeyRef:
