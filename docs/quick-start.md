@@ -1,9 +1,9 @@
 # Minimal Foreman quick start
 
 This experimental, unsupported milestone installs a single core Foreman web pod
-backed by PostgreSQL, optionally with Dynflow and the Foreman Tasks plugin for
-background tasks. It does not enable Katello, Candlepin, Pulp, Smart Proxy
-features, high availability, or production ingress.
+backed by PostgreSQL. Optionally it adds Dynflow with the Foreman Tasks plugin
+for background tasks, and Pulp. It does not enable Katello, Candlepin, Smart
+Proxy features, high availability, or production ingress.
 
 ## Dependencies
 
@@ -35,15 +35,19 @@ across commands if that name is already in use. To use Docker explicitly, set
 `KIND_EXPERIMENTAL_PROVIDER=docker` on each cluster command.
 
 `test` installs disposable PostgreSQL and Valkey, creates test credentials and
-test certificates, and installs the chart with Dynflow enabled. Helm waits for
-the migration and seed Job and the ready Foreman and Dynflow Deployments.
+test certificates, and installs the chart with Dynflow and Pulp enabled. Helm
+waits for the migration Jobs and the ready Deployments.
 Then [pytest-helm-charts](https://github.com/giantswarm/pytest-helm-charts) connects
-to that cluster and runs five tests: the web Deployment is available, the API
-reports an active database, the seeded administrator can query the users API,
-the web pod has the CA bundle from its Secret, and the `foreman` user in the
-web pod can read the client key and verify the client certificate against the
-CA bundle. The Dynflow tests are described in
-[Run background tasks](#run-background-tasks).
+to that cluster and runs the tests in `tests/integration`. For Foreman: the web
+Deployment is available, the API reports an active database, the seeded
+administrator can query the users API, the web pod has the CA bundle from its
+Secret, and the `foreman` user in the web pod can read the client key and verify
+the client certificate against the CA bundle. The Dynflow tests are described in
+[Run background tasks](#run-background-tasks). For Pulp: the api, content and
+worker Deployments are available on one node, the status API reports online
+api, content and worker processes with database and Valkey connected, the API
+answers only with a known `REMOTE-USER`, only pods allowed by the NetworkPolicy
+reach the API, and the content app answers.
 Pytest prints the test count and writes `artifacts/junit.xml` for CI reporting.
 The optional in-cluster smoke test can also be run with `helm test`.
 
@@ -113,6 +117,42 @@ recurring tasks. Kubernetes restarts it and it then runs normally.
 `foreman-tasks` plugin is loaded, that the API ping reports the Valkey cache as
 `ok`, and that a scheduled report runs as a task that ends in state `stopped`
 with result `success`.
+
+## Enable Pulp
+
+Pulp is off by default. With `pulp.enabled=true` the chart adds a migration Job
+that runs before every install and upgrade, Deployments for the Pulp API
+(Service port 24817), the content app (24816) and the tasking worker, and a
+PersistentVolumeClaim mounted at `/var/lib/pulp` by all of them.
+
+Pulp needs a PostgreSQL database, Valkey or Redis, and a Secret, default
+`pulp-runtime`, with these keys:
+
+| Key | Contents |
+| --- | --- |
+| `DATABASE_PASSWORD` | Password of the `pulp.database.user` role |
+| `SECRET_KEY` | Django secret key |
+| `REDIS_URL` | For example `redis://valkey:6379/8` |
+| `database_fields.symmetric.key` | Key for encrypted database fields, from `openssl rand -base64 32 \| tr '+/' '-_'` |
+
+Keep the database field key. Pulp cannot read fields encrypted with a lost key.
+Pulp can share one Valkey with Dynflow: Pulp uses the database number in its
+URL, 8 in the example, Dynflow uses 6 and the Rails cache 4.
+The database host and name, the content and API URLs Pulp advertises, and the
+enabled Pulp plugins are values under `pulp`.
+
+The content volume is ReadWriteOnce by default, so the content and worker pods
+are scheduled on the node of a Pulp API pod. All Pulp pods therefore run on one
+node; set `pulp.storage.colocate=false` only with ReadWriteMany storage.
+
+The Pulp API trusts the user name in the `REMOTE-USER` request header and
+accepts no passwords. It is meant to sit behind a front door that sets this
+header from a verified client certificate. The chart does not include that
+front door yet. A NetworkPolicy lets only pods labelled
+`app.kubernetes.io/component: httpd` of the same release connect to the API.
+Anyone who can create pods in the namespace can give a pod these labels. On
+clusters whose network plugin ignores NetworkPolicy, any pod that reaches
+the API Service can act as any Pulp user.
 
 ## Access and cleanup
 

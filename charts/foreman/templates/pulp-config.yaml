@@ -1,0 +1,25 @@
+{{- if .Values.pulp.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pulp.fullname" . }}-config
+  labels:
+    {{- include "pulp.labels" (dict "context" . "component" "pulp") | nindent 4 }}
+data:
+  {{- include "pulp.settings" . | nindent 2 }}
+---
+# Copy of the settings for the migration Job. Hooks run before regular release
+# resources exist, so the Job cannot use the ConfigMap above on install.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pulp.fullname" . }}-migration-config
+  labels:
+    {{- include "pulp.labels" (dict "context" . "component" "pulp-migration") | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    helm.sh/hook-weight: "-1"
+data:
+  {{- include "pulp.settings" . | nindent 2 }}
+{{- end }}

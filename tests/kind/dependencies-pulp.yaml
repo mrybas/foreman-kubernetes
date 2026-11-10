@@ -1,0 +1,37 @@
+# Test fixtures for Pulp: the pulp role and database on the PostgreSQL
+# fixture from dependencies.yaml. Valkey comes from dependencies-valkey.yaml.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pulp-database
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: create
+          image: postgres:16-alpine
+          env:
+            - name: PGHOST
+              value: postgresql
+            - name: PGUSER
+              value: postgres
+            - name: PGPASSWORD
+              value: postgres-test
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              psql --set ON_ERROR_STOP=1 <<'SQL'
+              SELECT 'CREATE ROLE pulp LOGIN PASSWORD ''pulp-test'''
+                WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'pulp')\gexec
+              SELECT 'CREATE DATABASE pulp OWNER pulp'
+                WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'pulp')\gexec
+              SQL
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi

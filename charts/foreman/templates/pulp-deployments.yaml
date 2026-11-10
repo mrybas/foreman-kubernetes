@@ -1,0 +1,81 @@
+{{- if .Values.pulp.enabled }}
+{{- $p := .Values.pulp }}
+{{- $apps := list
+  (dict "name" "api" "command" "pulp-api" "port" 24817 "probePath" "/pulp/api/v3/status/" "workersEnv" "PULP_API_WORKERS" "values" $p.api)
+  (dict "name" "content" "command" "pulp-content" "port" 24816 "probePath" "/pulp/content/" "workersEnv" "PULP_CONTENT_WORKERS" "values" $p.content)
+  (dict "name" "worker" "command" "pulp-worker" "values" $p.worker)
+}}
+{{- range $apps }}
+{{- $component := printf "pulp-%s" .name }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pulp.fullname" $ }}-{{ .name }}
+  labels:
+    {{- include "pulp.labels" (dict "context" $ "component" $component) | nindent 4 }}
+spec:
+  replicas: {{ .values.replicas }}
+  selector:
+    matchLabels:
+      {{- include "pulp.selectorLabels" (dict "context" $ "component" $component) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pulp.selectorLabels" (dict "context" $ "component" $component) | nindent 8 }}
+      annotations:
+        checksum/settings: {{ include "pulp.settings" $ | sha256sum }}
+    spec:
+      {{- include "pulp.podSpec" $ | nindent 6 }}
+      containers:
+        - name: {{ .name }}
+          image: {{ include "pulp.image" $ }}
+          imagePullPolicy: {{ $p.image.pullPolicy }}
+          command:
+            - {{ .command }}
+          securityContext:
+            {{- include "pulp.securityContext" $ | nindent 12 }}
+          {{- if .port }}
+          ports:
+            - name: http
+              containerPort: {{ .port }}
+              protocol: TCP
+          {{- end }}
+          env:
+            {{- include "pulp.env" $ | nindent 12 }}
+            {{- if .workersEnv }}
+            - name: {{ .workersEnv }}
+              value: {{ .values.workers | quote }}
+            {{- end }}
+          volumeMounts:
+            {{- include "pulp.configVolumeMount" $ | nindent 12 }}
+            - name: storage
+              mountPath: /var/lib/pulp
+          {{- if .probePath }}
+          startupProbe:
+            httpGet:
+              path: {{ .probePath }}
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: {{ .probePath }}
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          {{- end }}
+          resources:
+            {{- toYaml .values.resources | nindent 12 }}
+      volumes:
+        {{- include "pulp.podVolumes" $ | nindent 8 }}
+{{- end }}
+{{- end }}

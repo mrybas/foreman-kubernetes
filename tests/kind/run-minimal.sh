@@ -45,16 +45,26 @@ case "${1:-}" in
     # Test CA and Foreman client certificate (CN is the FQDN).
     KUBE_CONTEXT="${context}" "${repo_root}/tests/kind/certificates.sh" \
       "${namespace}" "${release}" foreman.test
-    # Dynflow: Valkey fixture and its URL in the runtime Secret.
+    # Valkey shared by Dynflow, the Rails cache and Pulp.
     kubectl --context "${context}" --namespace "${namespace}" apply \
-      --filename "${repo_root}/tests/kind/dependencies-dynflow.yaml"
+      --filename "${repo_root}/tests/kind/dependencies-valkey.yaml"
     kubectl --context "${context}" --namespace "${namespace}" rollout status deployment/valkey --timeout=180s
+    # Dynflow: Valkey URL in the runtime Secret.
     kubectl --context "${context}" --namespace "${namespace}" patch secret foreman-runtime \
       --type merge --patch '{"stringData":{"REDIS_URL":"redis://valkey:6379"}}'
+    # Pulp: the pulp database and test credentials.
+    kubectl --context "${context}" --namespace "${namespace}" apply \
+      --filename "${repo_root}/tests/kind/dependencies-pulp.yaml"
+    kubectl --context "${context}" --namespace "${namespace}" wait job/pulp-database --for=condition=complete --timeout=180s
+    kubectl --context "${context}" --namespace "${namespace}" create secret generic pulp-runtime \
+      --from-literal=DATABASE_PASSWORD=pulp-test --from-literal=REDIS_URL=redis://valkey:6379/8 \
+      --from-literal=SECRET_KEY='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
+      --from-literal=database_fields.symmetric.key='NrWyrMPhzbM0U78AQbiwfU1Lde28CSK_-Eu3i0A-TUo=' \
+      --dry-run=client --output=yaml | kubectl --context "${context}" apply --filename=-
     helm upgrade --install "${release}" "${repo_root}/charts/foreman" \
       --kube-context "${context}" --namespace "${namespace}" \
       --set-string foreman.fqdn=foreman.test --set-string foreman.externalUrl=http://foreman.test \
-      --set certificates.enabled=true --set dynflow.enabled=true \
+      --set certificates.enabled=true --set dynflow.enabled=true --set pulp.enabled=true \
       --wait --wait-for-jobs --timeout 20m
     ;;
   diagnostics)

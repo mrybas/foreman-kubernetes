@@ -213,3 +213,194 @@ Every Foreman pod shares the cache, so Dynflow and web see the same values.
 - name: temporary
   mountPath: /usr/share/foreman/tmp
 {{- end }}
+
+{{- define "pulp.fullname" -}}
+{{- printf "%s-pulp" (include "foreman.fullname" .) | trunc 52 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "pulp.image" -}}
+{{- printf "%s:%s" .Values.pulp.image.repository .Values.pulp.image.tag }}
+{{- end }}
+
+{{/* Labels for a Pulp object. Call with (dict "context" $ "component" "pulp-api"). */}}
+{{- define "pulp.labels" -}}
+{{ include "foreman.labels" .context }}
+app.kubernetes.io/component: {{ .component }}
+{{- end }}
+
+{{- define "pulp.selectorLabels" -}}
+{{ include "foreman.selectorLabels" .context }}
+app.kubernetes.io/component: {{ .component }}
+{{- end }}
+
+{{- define "pulp.claimName" -}}
+{{- .Values.pulp.storage.existingClaim | default (printf "%s-storage" (include "pulp.fullname" .)) }}
+{{- end }}
+
+{{/*
+/etc/pulp/settings.py. Ported from the environment foremanctl sets in
+src/roles/pulp/defaults/main.yaml. Values are rendered as JSON literals, which
+Python reads as the same strings and lists. Secrets are added by pulp.env.
+*/}}
+{{- define "pulp.settings" -}}
+{{- $s := .Values.pulp.settings -}}
+{{- $origin := $s.contentOrigin | default (printf "https://%s" .Values.foreman.fqdn) -}}
+settings.py: |
+  # Rendered by the foreman Helm chart.
+  DATABASES__default__ENGINE = "django.db.backends.postgresql"
+  DATABASES__default__HOST = {{ .Values.pulp.database.host | toJson }}
+  DATABASES__default__PORT = {{ .Values.pulp.database.port | int }}
+  DATABASES__default__NAME = {{ .Values.pulp.database.name | toJson }}
+  DATABASES__default__USER = {{ .Values.pulp.database.user | toJson }}
+  DATABASES__default__OPTIONS__sslmode = {{ .Values.pulp.database.sslMode | toJson }}
+  ENABLED_PLUGINS = {{ $s.enabledPlugins | toJson }}
+  CONTENT_ORIGIN = {{ $origin | toJson }}
+  SMART_PROXY_PULP_URL = {{ $s.smartProxyPulpUrl | default (printf "https://%s" .Values.foreman.fqdn) | toJson }}
+  SMART_PROXY_MIRROR = False
+  ANSIBLE_API_HOSTNAME = {{ $origin | toJson }}
+  ANSIBLE_CONTENT_HOSTNAME = {{ printf "%s/pulp/content" $origin | toJson }}
+  ANSIBLE_PERMISSION_CLASSES = []
+  ANALYTICS = False
+  CACHE_ENABLED = True
+  TOKEN_AUTH_DISABLED = True
+  FLATPAK_INDEX = True
+  AUTHENTICATION_BACKENDS = ["pulpcore.app.authentication.PulpNoCreateRemoteUserBackend"]
+  REMOTE_USER_ENVIRON_NAME = {{ $s.remoteUserEnvironName | toJson }}
+  REST_FRAMEWORK__DEFAULT_AUTHENTICATION_CLASSES = [
+      "rest_framework.authentication.SessionAuthentication",
+      "pulpcore.app.authentication.PulpRemoteUserAuthentication",
+  ]
+  ALLOWED_CONTENT_CHECKSUMS = ["sha1", "sha224", "sha256", "sha384", "sha512"]
+  ALLOWED_IMPORT_PATHS = ["/var/lib/pulp/sync_imports", "/var/lib/pulp/imports"]
+  ALLOWED_EXPORT_PATHS = ["/var/lib/pulp/exports"]
+  LOGGING__handlers__console__level = {{ $s.logLevel | upper | toJson }}
+  LOGGING__loggers____level = {{ $s.logLevel | upper | toJson }}
+  {{- with $s.extra }}
+  {{- . | nindent 2 }}
+  {{- end }}
+{{- end }}
+
+{{- define "pulp.env" -}}
+- name: PULP_SETTINGS
+  value: /etc/pulp/settings.py
+- name: PULP_LOG_LEVEL
+  value: {{ .Values.pulp.settings.logLevel | quote }}
+- name: PULP_DATABASES__default__PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.pulp.existingSecret }}
+      key: {{ .Values.pulp.databasePasswordSecretKey }}
+- name: PULP_SECRET_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.pulp.existingSecret }}
+      key: {{ .Values.pulp.secretKeySecretKey }}
+- name: PULP_REDIS_URL
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.pulp.existingSecret }}
+      key: {{ .Values.pulp.redisUrlSecretKey }}
+{{- end }}
+
+{{- define "pulp.podSecurityContext" -}}
+fsGroup: 700
+fsGroupChangePolicy: OnRootMismatch
+runAsGroup: 700
+runAsNonRoot: true
+runAsUser: 700
+seccompProfile:
+  type: RuntimeDefault
+{{- end }}
+
+{{- define "pulp.securityContext" -}}
+allowPrivilegeEscalation: false
+capabilities:
+  drop:
+    - ALL
+runAsNonRoot: true
+runAsGroup: 700
+runAsUser: 700
+{{- end }}
+
+{{/*
+/etc/pulp with settings.py from a ConfigMap and the database field key from
+the Secret. Call with (dict "context" $ "configMap" "<name>").
+*/}}
+{{- define "pulp.configVolume" -}}
+- name: pulp-config
+  projected:
+    defaultMode: 0440
+    sources:
+      - configMap:
+          name: {{ .configMap }}
+          items:
+            - key: settings.py
+              path: settings.py
+      - secret:
+          name: {{ .context.Values.pulp.existingSecret }}
+          items:
+            - key: {{ .context.Values.pulp.symmetricKeySecretKey }}
+              path: certs/database_fields.symmetric.key
+{{- end }}
+
+{{- define "pulp.configVolumeMount" -}}
+- name: pulp-config
+  mountPath: /etc/pulp
+  readOnly: true
+{{- end }}
+
+{{/*
+Directories Pulp expects under /var/lib/pulp. Django checks that tmp exists
+before migrate or any process starts.
+*/}}
+{{- define "pulp.storageDirectories" -}}
+/var/lib/pulp/tmp /var/lib/pulp/assets /var/lib/pulp/media /var/lib/pulp/sync_imports /var/lib/pulp/imports /var/lib/pulp/exports
+{{- end }}
+
+{{/* Runtime pod spec parts shared by api, content and worker. */}}
+{{- define "pulp.podSpec" -}}
+automountServiceAccountToken: false
+securityContext:
+  {{- include "pulp.podSecurityContext" . | nindent 2 }}
+{{- with .Values.imagePullSecrets }}
+imagePullSecrets:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- if .Values.pulp.storage.colocate }}
+# The content volume may be ReadWriteOnce, so every Pulp pod runs on the node
+# of a Pulp API pod. The first API pod matches its own term and goes anywhere.
+affinity:
+  podAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - topologyKey: kubernetes.io/hostname
+        labelSelector:
+          matchLabels:
+            {{- include "pulp.selectorLabels" (dict "context" . "component" "pulp-api") | nindent 12 }}
+{{- end }}
+initContainers:
+  - name: storage
+    image: {{ include "pulp.image" . }}
+    imagePullPolicy: {{ .Values.pulp.image.pullPolicy }}
+    command:
+      - /bin/bash
+      - -ec
+      - mkdir -p {{ include "pulp.storageDirectories" . }}
+    securityContext:
+      {{- include "pulp.securityContext" . | nindent 6 }}
+    volumeMounts:
+      - name: storage
+        mountPath: /var/lib/pulp
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 64Mi
+{{- end }}
+
+{{- define "pulp.podVolumes" -}}
+{{ include "pulp.configVolume" (dict "context" . "configMap" (printf "%s-config" (include "pulp.fullname" .))) }}
+- name: storage
+  persistentVolumeClaim:
+    claimName: {{ include "pulp.claimName" . }}
+{{- end }}

@@ -1,5 +1,5 @@
-# Disposable Valkey for Dynflow and the Rails cache. Test fixture only: no
-# persistence, no authentication, no TLS.
+# Disposable Valkey shared by Dynflow (database 6), the Rails cache (4) and
+# Pulp (8). Test fixture only: no persistence, no authentication, no TLS.
 apiVersion: v1
 kind: Service
 metadata:

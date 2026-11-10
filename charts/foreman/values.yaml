@@ -107,3 +107,109 @@ resources:
 
 test:
   image: curlimages/curl:8.17.0
+
+# Pulp serves repository content for Katello. It runs as three Deployments
+# (api, content, worker) that share one content volume, plus a migration Job
+# that runs before every install and upgrade. Settings that are not secret are
+# rendered into /etc/pulp/settings.py; credentials come from existingSecret.
+pulp:
+  enabled: false
+  image:
+    repository: quay.io/foreman/pulp
+    tag: foreman-nightly
+    pullPolicy: IfNotPresent
+  # Secret in the release namespace with the keys named below.
+  existingSecret: pulp-runtime
+  databasePasswordSecretKey: DATABASE_PASSWORD
+  # Django SECRET_KEY.
+  secretKeySecretKey: SECRET_KEY
+  # Valkey or Redis URL, for example redis://valkey:6379/8.
+  redisUrlSecretKey: REDIS_URL
+  # Fernet key Pulp uses to encrypt database fields, created with
+  # `openssl rand -base64 32 | tr '+/' '-_'`. Keep it: data encrypted with a
+  # lost key cannot be read.
+  symmetricKeySecretKey: database_fields.symmetric.key
+  database:
+    host: postgresql
+    port: 5432
+    name: pulp
+    user: pulp
+    sslMode: disable
+  settings:
+    # Base URL that Pulp publishes for content, used by hosts to download
+    # packages. Default https://<foreman.fqdn>.
+    contentOrigin: ""
+    # Pulp API URL that Pulp advertises to Foreman as a Smart Proxy feature.
+    # Katello sends its API calls there. Default https://<foreman.fqdn>.
+    smartProxyPulpUrl: ""
+    enabledPlugins:
+      - pulp_certguard
+      - pulp_file
+      - pulp_smart_proxy
+      - pulp_container
+      - pulp_rpm
+    # Pulp trusts the user name in this WSGI variable. HTTP_REMOTE_USER is the
+    # REMOTE-USER request header, which a front door sets after it verified
+    # the client certificate. Pulp accepts no passwords.
+    remoteUserEnvironName: HTTP_REMOTE_USER
+    logLevel: info
+    # Extra Python appended to settings.py, for example
+    # "ALLOWED_EXPORT_PATHS = ['/var/lib/pulp/exports']". No secrets here.
+    extra: ""
+  api:
+    replicas: 1
+    # Gunicorn worker processes per pod.
+    workers: 2
+    resources:
+      requests:
+        cpu: 100m
+        memory: 384Mi
+      limits:
+        memory: 1Gi
+    # Only pods that match this selector, in the release namespace and with
+    # the release instance label, may connect to the API. Pulp trusts the
+    # REMOTE-USER header, so a client that reaches the API directly could
+    # claim any user. Takes effect only where the network plugin enforces
+    # NetworkPolicy. Until a pod with these labels exists, nothing can reach
+    # the API. Anyone who can create pods in the namespace can add the labels.
+    networkPolicy:
+      enabled: true
+      clientPodLabels:
+        app.kubernetes.io/component: httpd
+  content:
+    replicas: 1
+    workers: 2
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+  worker:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 2Gi
+  migration:
+    backoffLimit: 2
+    activeDeadlineSeconds: 1200
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+  storage:
+    # PersistentVolumeClaim mounted at /var/lib/pulp by every Pulp pod. With
+    # existingClaim set, the chart creates no claim.
+    existingClaim: ""
+    size: 10Gi
+    # Empty uses the cluster default StorageClass.
+    storageClass: ""
+    accessMode: ReadWriteOnce
+    # Schedule content and worker pods on the node of a Pulp API pod, so they
+    # can share a ReadWriteOnce volume. Set false with ReadWriteMany storage.
+    colocate: true

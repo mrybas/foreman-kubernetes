@@ -1,0 +1,44 @@
+{{- if .Values.pulp.enabled }}
+{{- range $name, $port := dict "api" 24817 "content" 24816 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pulp.fullname" $ }}-{{ $name }}
+  labels:
+    {{- include "pulp.labels" (dict "context" $ "component" (printf "pulp-%s" $name)) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "pulp.selectorLabels" (dict "context" $ "component" (printf "pulp-%s" $name)) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}
+{{- if .Values.pulp.api.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "pulp.fullname" . }}-api
+  labels:
+    {{- include "pulp.labels" (dict "context" . "component" "pulp-api") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "pulp.selectorLabels" (dict "context" . "component" "pulp-api") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- toYaml .Values.pulp.api.networkPolicy.clientPodLabels | nindent 14 }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+      ports:
+        - port: http
+          protocol: TCP
+{{- end }}
+{{- end }}

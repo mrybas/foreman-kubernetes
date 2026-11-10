@@ -5,3 +5,10 @@ Foreman is available inside the cluster at:
 Run the chart smoke test with:
 
   helm test {{ .Release.Name }} --namespace {{ .Release.Namespace }} --logs
+{{- if .Values.pulp.enabled }}
+
+Pulp runs inside the cluster at:
+
+  API:     http://{{ include "pulp.fullname" . }}-api:24817 (needs a front door that sets REMOTE-USER)
+  Content: http://{{ include "pulp.fullname" . }}-content:24816
+{{- end }}
