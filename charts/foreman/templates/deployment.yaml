@@ -28,17 +28,32 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if .Values.katello.enabled }}
+      initContainers:
+        {{- include "katello.initContainer" . | nindent 8 }}
+      {{- end }}
       containers:
         - name: foreman
           image: {{ include "foreman.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command:
+            {{- if .Values.katello.enabled }}
+            # The Katello event daemon runs inside Puma and does not start
+            # while its PID file from before a container restart names a
+            # running process (Katello #11891). tmp survives the restart.
+            - /bin/bash
+            - -c
+            - >-
+              rm -f /usr/share/foreman/tmp/pids/katello_event_daemon.pid &&
+              exec /usr/share/foreman/bin/rails server --environment production --pid /tmp/rails.pid
+            {{- else }}
             - /usr/share/foreman/bin/rails
             - server
             - --environment
             - production
             - --pid
             - /tmp/rails.pid
+            {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -90,4 +105,7 @@ spec:
           emptyDir: {}
         {{- if .Values.certificates.enabled }}
         {{- include "foreman.certificatesVolume" . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.katello.enabled }}
+        {{- include "katello.volume" . | nindent 8 }}
         {{- end }}

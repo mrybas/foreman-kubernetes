@@ -82,6 +82,9 @@ settings.yaml: |
   :ssl_certificate: {{ include "foreman.certificatesPath" $context }}/client.crt
   :ssl_priv_key: {{ include "foreman.certificatesPath" $context }}/client.key
   {{- end }}
+{{- if $context.Values.katello.enabled }}
+{{ include "katello.configuration" $context }}
+{{- end }}
 {{- end }}
 
 {{- define "foreman.certificatesPath" -}}
@@ -179,6 +182,10 @@ plugin only when its name is in this list.
 {{- if .Values.dynflow.enabled }}
 {{- $plugins = append $plugins "foreman-tasks" -}}
 {{- end }}
+{{- if .Values.katello.enabled }}
+{{- /* Katello requires foreman_remote_execution and loads it either way. */}}
+{{- $plugins = concat $plugins (list "foreman_remote_execution" "katello") -}}
+{{- end }}
 {{- join " " $plugins -}}
 {{- end }}
 
@@ -217,6 +224,9 @@ Every Foreman pod shares the cache, so Dynflow and web see the same values.
 {{- if .Values.certificates.enabled }}
 {{ include "foreman.certificatesVolumeMount" . }}
 {{- end }}
+{{- if .Values.katello.enabled }}
+{{ include "katello.volumeMount" . }}
+{{- end }}
 {{- end }}
 
 {{- define "foreman.migrationVolumeMounts" -}}
@@ -230,6 +240,9 @@ Every Foreman pod shares the cache, so Dynflow and web see the same values.
   readOnly: true
 - name: temporary
   mountPath: /usr/share/foreman/tmp
+{{- if .Values.katello.enabled }}
+{{ include "katello.volumeMount" . }}
+{{- end }}
 {{- end }}
 
 {{- define "pulp.fullname" -}}
@@ -645,4 +658,103 @@ ProxyPass /images !
 ProxyPass /server-status !
 ProxyPass / {{ include "httpd.foremanBackend" . }}/ retry=0 timeout=900 upgrade=websocket
 ProxyPassReverse / {{ include "httpd.foremanBackend" . }}/
+{{- end }}
+
+
+{{/* Katello. */}}
+{{- define "katello.validate" -}}
+{{- range list "dynflow" "pulp" "candlepin" "certificates" "httpd" }}
+{{- if not (index $.Values . "enabled") }}
+{{- fail (printf "katello.enabled requires %s.enabled" .) }}
+{{- end }}
+{{- end }}
+{{- if not (hasPrefix "https://" .Values.foreman.externalUrl) }}
+{{- fail "katello.enabled requires an https foreman.externalUrl: hosts reach /rhsm through it" }}
+{{- end }}
+{{- end }}
+
+{{- define "katello.candlepinUrl" -}}
+{{- printf "https://%s:23443/candlepin" (include "candlepin.fullname" .) }}
+{{- end }}
+
+{{- define "katello.pulpSmartProxyName" -}}
+{{- .Values.katello.pulpSmartProxy.name | default (printf "%s-pulp" .Values.foreman.fqdn) }}
+{{- end }}
+
+{{- define "katello.pulpSmartProxyUrl" -}}
+{{- .Values.katello.pulpSmartProxy.url | default (printf "https://%s.%s.svc/pulp/api/v3/smart_proxy" (include "httpd.fullname" .) .Release.Namespace) }}
+{{- end }}
+
+{{/*
+/etc/foreman/plugins/katello.yaml without the Candlepin OAuth secret, which
+the katello-config init container adds. Foreman reads plugin settings as
+plain YAML, without ERB or environment variables.
+*/}}
+{{- define "katello.configuration" -}}
+katello.yaml: |
+  ---
+  :katello:
+    :rest_client_timeout: {{ .Values.katello.restClientTimeout | int }}
+    :candlepin:
+      :url: {{ include "katello.candlepinUrl" . | quote }}
+      :oauth_key: katello
+      :ca_cert_file: {{ include "foreman.certificatesPath" . }}/ca.crt
+{{- end }}
+
+{{/*
+Init container that writes katello.yaml with the OAuth secret into the
+katello-config volume. Every pod that loads Katello runs it.
+*/}}
+{{- define "katello.initContainer" -}}
+- name: katello-config
+  image: {{ include "foreman.image" . }}
+  imagePullPolicy: {{ .Values.image.pullPolicy }}
+  command:
+    - ruby
+    - -ryaml
+    - -e
+    - |
+      settings = YAML.safe_load_file("/run/foreman-config/katello.yaml", permitted_classes: [Symbol])
+      settings[:katello][:candlepin][:oauth_secret] = ENV.fetch("KATELLO_CANDLEPIN_OAUTH_SECRET")
+      File.write("/run/katello/katello.yaml", YAML.dump(settings), perm: 0o600)
+  env:
+    - name: KATELLO_CANDLEPIN_OAUTH_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: {{ .Values.candlepin.existingSecret }}
+          key: {{ .Values.candlepin.oauthSecretSecretKey }}
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    runAsNonRoot: true
+    runAsGroup: 994
+    runAsUser: 994
+  volumeMounts:
+    - name: configuration
+      mountPath: /run/foreman-config
+      readOnly: true
+    - name: katello-config
+      mountPath: /run/katello
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+{{- end }}
+
+{{- define "katello.volume" -}}
+- name: katello-config
+  emptyDir:
+    medium: Memory
+    sizeLimit: 1Mi
+{{- end }}
+
+{{- define "katello.volumeMount" -}}
+- name: katello-config
+  mountPath: /etc/foreman/plugins/katello.yaml
+  subPath: katello.yaml
+  readOnly: true
 {{- end }}

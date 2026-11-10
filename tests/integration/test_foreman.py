@@ -9,9 +9,12 @@ from urllib.request import Request, urlopen
 
 import pytest
 
+FQDN = os.environ.get("FOREMAN_FQDN", "foreman.test")
+ADMIN_AUTH = "Basic " + base64.b64encode(
+    b"admin:" + os.environ.get("FOREMAN_ADMIN_PASSWORD", "foreman-test").encode()).decode()
 # Requests straight to the web Service, as httpd would send them: Foreman
 # requires HTTPS when the front door is enabled.
-WEB_HEADERS = {"Host": "foreman.test", "X-Forwarded-Proto": "https"}
+WEB_HEADERS = {"Host": FQDN, "X-Forwarded-Proto": "https"}
 
 
 @pytest.fixture(scope="module")
@@ -73,7 +76,7 @@ def test_database_is_active(api_url):
 def test_seeded_admin_can_use_api(api_url):
     request = Request(
         f"{api_url}/api/v2/users?search=login%3Dadmin",
-        headers={**WEB_HEADERS, "Authorization": "Basic YWRtaW46Zm9yZW1hbi10ZXN0"},
+        headers={**WEB_HEADERS, "Authorization": ADMIN_AUTH},
     )
     with urlopen(request, timeout=30) as response:
         assert response.status == 200

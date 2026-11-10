@@ -18,8 +18,8 @@ import time
 
 import pytest
 
-FQDN = os.environ.get("FOREMAN_FQDN", "foreman.test")
-ADMIN = "Basic " + base64.b64encode(b"admin:foreman-test").decode()
+from test_foreman import ADMIN_AUTH as ADMIN, FQDN
+
 FORGED_LOGIN = "forged-external-user"
 # Rack maps "-" and "_" to the same variable, so mixed spellings count too.
 FORGED_IDENTITY = {

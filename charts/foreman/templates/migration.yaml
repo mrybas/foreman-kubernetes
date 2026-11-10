@@ -31,6 +31,10 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if .Values.katello.enabled }}
+      initContainers:
+        {{- include "katello.initContainer" . | nindent 8 }}
+      {{- end }}
       containers:
         - name: migrate
           image: {{ include "foreman.image" . }}
@@ -69,3 +73,6 @@ spec:
             name: {{ include "foreman.migrationConfigName" . }}
         - name: temporary
           emptyDir: {}
+        {{- if .Values.katello.enabled }}
+        {{- include "katello.volume" . | nindent 8 }}
+        {{- end }}

@@ -321,3 +321,25 @@ pulp:
     # Schedule content and worker pods on the node of a Pulp API pod, so they
     # can share a ReadWriteOnce volume. Set false with ReadWriteMany storage.
     colocate: true
+
+# Katello adds content and subscription management to Foreman. It needs
+# dynflow, pulp, candlepin, certificates and httpd enabled, and an https
+# foreman.externalUrl. Katello reaches Candlepin at
+# https://<fullname>-candlepin:23443/candlepin with the OAuth secret from
+# candlepin.existingSecret, and trusts it through the certificates.ca bundle,
+# which must also hold the CA that signs Candlepin consumer certificates.
+katello:
+  enabled: false
+  # Seconds Katello waits for a Candlepin or Pulp API response.
+  restClientTimeout: 3600
+  # After every install and upgrade a Job registers Pulp in Foreman as a Smart
+  # Proxy with the Pulpcore feature. Katello then uses the Pulp API URL that
+  # Pulp advertises (pulp.settings.smartProxyPulpUrl).
+  pulpSmartProxy:
+    # Default <foreman.fqdn>-pulp.
+    name: ""
+    # Pulp's Smart Proxy API through httpd, reachable from the Foreman pods.
+    # Default https://<fullname>-httpd.<namespace>.svc/pulp/api/v3/smart_proxy.
+    url: ""
+    backoffLimit: 6
+    activeDeadlineSeconds: 900

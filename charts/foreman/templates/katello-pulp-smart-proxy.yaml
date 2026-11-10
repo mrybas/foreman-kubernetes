@@ -1,0 +1,90 @@
+{{- if .Values.katello.enabled }}
+{{- include "katello.validate" . }}
+{{- /*
+Register Pulp as a Smart Proxy with the Pulpcore feature, as foremanctl does
+after it starts Pulp. Saving a Smart Proxy makes Foreman fetch its features,
+so this also refreshes the Pulp URL Katello uses. It runs after every install
+and upgrade, when the web ConfigMap and the httpd front door exist.
+*/}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "foreman.fullname" . }}-pulp-smart-proxy-{{ .Release.Revision }}
+  labels:
+    {{- include "foreman.labels" . | nindent 4 }}
+    app.kubernetes.io/component: pulp-smart-proxy
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    helm.sh/hook-weight: "0"
+spec:
+  backoffLimit: {{ .Values.katello.pulpSmartProxy.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.katello.pulpSmartProxy.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "foreman.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: pulp-smart-proxy
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 994
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 994
+        runAsNonRoot: true
+        runAsUser: 994
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        {{- include "katello.initContainer" . | nindent 8 }}
+      containers:
+        - name: register
+          image: {{ include "foreman.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          workingDir: /usr/share/foreman
+          command:
+            - bin/rails
+            - runner
+            - |
+              name = ENV.fetch("PULP_SMART_PROXY_NAME")
+              url = ENV.fetch("PULP_SMART_PROXY_URL")
+              User.as_anonymous_admin do
+                proxy = SmartProxy.unscoped.find_or_initialize_by(name: name)
+                proxy.url = url
+                abort("Cannot register #{name} at #{url}: #{proxy.errors.full_messages.join('; ')}") unless proxy.save
+                features = proxy.features.pluck(:name)
+                abort("#{name} at #{url} has no Pulpcore feature: #{features.inspect}") unless features.include?("Pulpcore")
+                puts "Smart Proxy #{name} at #{url}: #{features.join(', ')}"
+              end
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            runAsGroup: 994
+            runAsUser: 994
+          env:
+            {{- include "foreman.env" . | nindent 12 }}
+            - name: PULP_SMART_PROXY_NAME
+              value: {{ include "katello.pulpSmartProxyName" . | quote }}
+            - name: PULP_SMART_PROXY_URL
+              value: {{ include "katello.pulpSmartProxyUrl" . | quote }}
+          volumeMounts:
+            {{- include "foreman.volumeMounts" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: configuration
+          configMap:
+            name: {{ include "foreman.configName" . }}
+        - name: temporary
+          emptyDir: {}
+        {{- include "foreman.certificatesVolume" . | nindent 8 }}
+        {{- include "katello.volume" . | nindent 8 }}
+{{- end }}

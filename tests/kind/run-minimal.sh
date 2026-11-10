@@ -74,15 +74,18 @@ case "${1:-}" in
       --from-literal=DATABASE_USERNAME=candlepin --from-literal=DATABASE_PASSWORD=candlepin-test \
       --from-literal=OAUTH_SECRET=candlepin-oauth-test \
       --dry-run=client --output=yaml | kubectl --context "${context}" apply --filename=-
+    # Yum repository the Katello tests sync, served inside the cluster.
+    KUBE_CONTEXT="${context}" "${repo_root}/tests/kind/rpm-repository.sh" "${namespace}"
     helm upgrade --install "${release}" "${repo_root}/charts/foreman" \
       --kube-context "${context}" --namespace "${namespace}" \
       --set-string foreman.fqdn=foreman.test --set-string foreman.externalUrl=https://foreman.test \
       --set certificates.enabled=true --set httpd.enabled=true \
       --set 'foreman.trustedProxies={10.244.0.0/16}' \
       --set dynflow.enabled=true --set pulp.enabled=true --set candlepin.enabled=true \
+      --set katello.enabled=true \
       --set-string pulp.settings.smartProxyPulpUrl="https://${release}-foreman-httpd.${namespace}.svc" \
       --set-string pulp.settings.contentOrigin=https://foreman.test \
-      --wait --wait-for-jobs --timeout 20m
+      --wait --wait-for-jobs --timeout 30m
     ;;
   diagnostics)
     require_cluster

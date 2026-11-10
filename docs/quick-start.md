@@ -2,9 +2,9 @@
 
 This experimental, unsupported milestone installs a single core Foreman web pod
 backed by PostgreSQL. Optionally it adds Dynflow with the Foreman Tasks plugin
-for background tasks, Pulp, Candlepin, and an HTTPS front door. It does not
-enable Katello, Smart Proxy features, high availability, or production
-ingress.
+for background tasks, Pulp, Candlepin, an HTTPS front door, and the Katello
+plugin. It does not enable Smart Proxy features, high availability, or
+production ingress.
 
 ## Dependencies
 
@@ -37,10 +37,10 @@ across commands if that name is already in use. To use Docker explicitly, set
 
 `test` installs disposable PostgreSQL and Valkey, creates test credentials and
 test certificates, and installs the chart with the HTTPS front door, Dynflow,
-Pulp and Candlepin enabled. Helm waits for the migration Jobs and the ready
-Deployments.
+Pulp, Candlepin and Katello enabled. Helm waits for the migration Jobs, the
+ready Deployments and the Job that registers Pulp in Foreman.
 Then [pytest-helm-charts](https://github.com/giantswarm/pytest-helm-charts) connects
-to that cluster and runs the 40 tests in `tests/integration`. For Foreman: the web
+to that cluster and runs the 48 tests in `tests/integration`. For Foreman: the web
 Deployment is available, the API reports an active database, the seeded
 administrator can query the users API, the web pod has the CA bundle from its
 Secret, and the `foreman` user in the web pod can read the client key and verify
@@ -62,6 +62,7 @@ HTTPS, that a client certificate from the CA is accepted and a self-signed one
 is rejected, that only the httpd pods of the release can connect to the
 Foreman web port, and that the Pulp API through httpd accepts the Foreman
 client certificate as the Pulp administrator and refuses clients without it.
+The Katello tests are described in [Enable Katello](#enable-katello).
 Pytest prints the test count and writes `artifacts/junit.xml` for CI reporting.
 The optional in-cluster smoke test can also be run with `helm test`.
 
@@ -233,6 +234,49 @@ the front door, `https://<fullname>-httpd.<namespace>.svc`, because `foreman.fqd
 may not resolve inside the cluster; `pulp.settings.contentOrigin` stays
 `https://<foreman.fqdn>`. `make test` sets both. Candlepin is never exposed;
 Foreman answers `/rhsm` itself.
+
+## Enable Katello
+
+Katello is a Foreman plugin for content and subscription management. Set
+`katello.enabled=true` together with `dynflow.enabled`, `pulp.enabled`,
+`candlepin.enabled`, `certificates.enabled` and `httpd.enabled`, and use an
+`https://` `foreman.externalUrl`. Rendering fails otherwise. Every Foreman pod
+then loads the `katello` and `foreman_remote_execution` plugins and reads
+`/etc/foreman/plugins/katello.yaml`.
+
+Katello connects to Candlepin at `https://<fullname>-candlepin:23443/candlepin`
+with the OAuth secret from the Candlepin Secret (`OAUTH_SECRET`). Foreman reads
+plugin settings as plain YAML, so an init container writes the file with the
+secret into a memory-backed volume. Katello verifies Candlepin against the
+`foreman-ca` bundle. Pulp checks client entitlement certificates against the
+same bundle, so it must also contain the CA certificate from
+`foreman-candlepin-ca`.
+
+Katello finds Pulp through a Smart Proxy with the Pulpcore feature. After every
+install and upgrade a Job registers Pulp under the name `<foreman.fqdn>-pulp`
+with the URL `https://<fullname>-httpd.<namespace>.svc/pulp/api/v3/smart_proxy`
+(`katello.pulpSmartProxy`). Foreman fetches the Pulp features through httpd
+with its client certificate. Katello then calls Pulp at
+`pulp.settings.smartProxyPulpUrl` and hosts download content from
+`pulp.settings.contentOrigin`.
+
+The Katello event daemon runs inside the Foreman web process. The web container
+removes the daemon's PID file before it starts, because a file left by a
+restarted container stops the daemon from starting.
+
+`make test` checks that `/katello/api/ping` reports Candlepin, Candlepin
+authentication, Foreman Tasks, the event daemon, the Pulp API and the Pulp
+content app as `ok`, and that Pulp is registered as a Smart Proxy. It then
+creates an organization with a product and a yum repository, syncs it,
+checks that the repository metadata is served only with an entitlement
+certificate, publishes a content view, creates an activation key, registers a
+consumer with it, and deletes the organization. A self-signed certificate for
+that consumer, sent as an `X-RHSM-SSL-CLIENT-CERT` header in any `-`/`_`
+spelling by a client without a valid client certificate, must not
+authenticate as the consumer. The repository is a copy of the Pulp project's small
+`rpm-unsigned` fixture. `tests/kind/rpm-repository.sh` downloads it on the
+machine that runs the tests and serves it inside the cluster at
+`http://rpm-repository/`, so the cluster needs no outbound access for it.
 
 ## Access and cleanup
 

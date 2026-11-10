@@ -1,0 +1,83 @@
+# Test fixture: serves the yum repository from the rpm-repository ConfigMap
+# (created by rpm-repository.sh) at http://rpm-repository/. Packages go to the
+# root, metadata to repodata/, as in the source repository.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rpm-repository
+spec:
+  selector:
+    app.kubernetes.io/name: rpm-repository
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rpm-repository
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rpm-repository
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rpm-repository
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 700
+        runAsGroup: 700
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: http
+          # Any image with Python works; this one is already on the nodes.
+          image: quay.io/foreman/pulp:foreman-nightly
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              mkdir -p /srv/repo/repodata
+              for file in /fixture/*; do
+                case "${file}" in
+                  *.rpm) cp "${file}" /srv/repo/ ;;
+                  *) cp "${file}" /srv/repo/repodata/ ;;
+                esac
+              done
+              exec python3 -m http.server 8080 --directory /srv/repo
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          readinessProbe:
+            httpGet:
+              path: /repodata/repomd.xml
+              port: http
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: fixture
+              mountPath: /fixture
+              readOnly: true
+            - name: repo
+              mountPath: /srv/repo
+      volumes:
+        - name: fixture
+          configMap:
+            name: rpm-repository
+        - name: repo
+          emptyDir: {}
