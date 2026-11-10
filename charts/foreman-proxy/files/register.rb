@@ -9,7 +9,8 @@
 #   PROXY_NAME  foreman-proxy, features PROXY_FEATURES
 #
 # Each is created or updated (URL, organizations and locations added to the
-# existing ones), then refreshed until Foreman reports the expected features.
+# existing ones), then refreshed until Foreman reports the expected features
+# and, with the Script feature, has stored the SSH public key.
 # Then the lifecycle environments named in LIFECYCLE_ENVIRONMENTS are added to
 # the Pulp record in each of its organizations. Every step is idempotent.
 # Retries until TIMEOUT_SECONDS, because the pods of this release and Foreman
@@ -125,6 +126,11 @@ def register(record, organization_ids, location_ids, extra = {})
   features = proxy.fetch('features', []).map { |feature| feature['name'] }
   missing = record[:features] - features
   raise NotReady, "#{record[:name]}: features #{features.sort.inspect} lack #{missing.inspect}" unless missing.empty?
+  # foreman_remote_execution stores the SSH public key on refresh, not on
+  # create. Global Registration installs it on hosts from there.
+  if record[:features].include?('Script') && proxy['remote_execution_pubkey'].to_s.strip.empty?
+    raise NotReady, "#{record[:name]}: Foreman has not stored the Remote Execution SSH public key yet"
+  end
 
   puts "#{action} Smart Proxy #{record[:name]} (id #{id}) at #{record[:url]}"
   puts "  features: #{features.sort.join(', ')}"

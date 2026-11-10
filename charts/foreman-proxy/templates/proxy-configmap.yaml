@@ -1,8 +1,8 @@
 {{- /*
 Settings ported from foremanctl src/roles/foreman_proxy for a Smart Proxy with
 content. The image ships every module in settings.d with :enabled: false; the
-files below turn on the ones this chart uses. Logs go to stdout instead of the
-journal.
+files below turn on the ones this release uses (proxy.modules). Logs go to
+stdout instead of the journal.
 */}}
 {{- $tls := include "proxy.tlsPath" . }}
 apiVersion: v1
@@ -60,3 +60,37 @@ data:
     ---
     :enabled: https
     :template_url: {{ include "proxy.url" . | quote }}
+  {{- $modules := include "proxy.modules" . | fromJsonArray }}
+  {{- if has "remote_execution_ssh" $modules }}
+  # The key comes from a Secret volume (root:991, 0440). ~/.ssh stays
+  # writable for known_hosts.
+  remote_execution_ssh.yml: |
+    ---
+    :enabled: https
+    :ssh_identity_key_file: /etc/foreman-proxy/ssh/id_rsa_foreman_proxy
+    :local_working_dir: /var/tmp
+    :remote_working_dir: /var/tmp
+    :socket_working_dir: /var/tmp
+    :mode: ssh
+  {{- end }}
+  {{- if has "ansible" $modules }}
+  ansible.yml: |
+    ---
+    :enabled: https
+    :ansible_dir: /usr/share/foreman-proxy
+    :ansible_environment_file: /etc/foreman-proxy/ansible.env
+    :working_dir: /var/tmp
+  # The theforeman.foreman callback sends facts and reports to the Foreman
+  # server with this Smart Proxy's client certificate.
+  ansible.env: |
+    export ANSIBLE_CALLBACKS_ENABLED="theforeman.foreman.foreman"
+    export ANSIBLE_LOCAL_TEMP="/tmp"
+    export ANSIBLE_HOST_KEY_CHECKING="False"
+    export ANSIBLE_ROLES_PATH="/etc/ansible/roles:/usr/share/ansible/roles"
+    export ANSIBLE_COLLECTIONS_PATH="/etc/ansible/collections:/usr/share/ansible/collections"
+    export FOREMAN_URL={{ include "foreman-proxy.foremanUrl" . | quote }}
+    export FOREMAN_SSL_CERT="{{ $tls }}/client.crt"
+    export FOREMAN_SSL_KEY="{{ $tls }}/client.key"
+    export FOREMAN_SSL_VERIFY="{{ $tls }}/server-ca.crt"
+    export ANSIBLE_SSH_ARGS="-C -o ControlMaster=auto -o ControlPersist=60s -o ServerAliveInterval=15 -o ServerAliveCountMax=3"
+  {{- end }}

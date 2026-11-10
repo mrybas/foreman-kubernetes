@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Create the SSH key pair the Smart Proxy uses for Remote Execution and store
-# it as the Secret the foreman Helm chart reads. With SSH_TARGET=1 also deploy
+# it as a Secret (the foreman chart's default name; the foreman-proxy chart
+# takes it in proxy.remoteExecutionSsh.secretName). With SSH_TARGET=1 also deploy
 # an SSH server fixture (tests/kind/dependencies-proxy.yaml) that trusts the key.
 #
 # Usage: proxy-ssh.sh NAMESPACE RELEASE
@@ -14,7 +15,7 @@
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
-  sed -n '6p' "$0" | sed 's/^# //' >&2
+  sed -n '7p' "$0" | sed 's/^# //' >&2
   exit 2
 fi
 

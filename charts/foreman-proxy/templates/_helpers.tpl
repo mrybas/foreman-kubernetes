@@ -580,9 +580,46 @@ SSLProxyMachineCertificateFile /run/httpd-client/client.pem
 /etc/foreman-proxy/tls
 {{- end }}
 
+{{/* foreman-proxy modules this release enables, as a JSON list. */}}
+{{- define "proxy.modules" -}}
+{{- $modules := list "logs" "dynflow" "registration" "templates" }}
+{{- if .Values.proxy.remoteExecutionSsh.enabled }}
+{{- $modules = append $modules "remote_execution_ssh" }}
+{{- if .Values.proxy.ansible.enabled }}
+{{- $modules = append $modules "ansible" }}
+{{- end }}
+{{- end }}
+{{- toJson $modules }}
+{{- end }}
+
+{{/*
+Optional plugin gems Bundler loads (FOREMAN_PROXY_ENABLED_PLUGINS). Empty
+loads none.
+*/}}
+{{- define "proxy.plugins" -}}
+{{- $modules := include "proxy.modules" . | fromJsonArray }}
+{{- $plugins := list }}
+{{- range list "remote_execution_ssh" "ansible" }}
+{{- if has . $modules }}
+{{- $plugins = append $plugins . }}
+{{- end }}
+{{- end }}
+{{- join " " $plugins }}
+{{- end }}
+
 {{/* Feature names Foreman shows for the enabled foreman-proxy modules. */}}
 {{- define "proxy.features" -}}
-Dynflow Logs Registration Templates
+{{- $names := dict "logs" "Logs" "dynflow" "Dynflow" "registration" "Registration" "templates" "Templates"
+  "remote_execution_ssh" "Script" "ansible" "Ansible" }}
+{{- $features := list }}
+{{- range (include "proxy.modules" . | fromJsonArray) }}
+{{- $features = append $features (get $names .) }}
+{{- end }}
+{{- $features | sortAlpha | join " " }}
+{{- end }}
+
+{{- define "proxy.sshSecretName" -}}
+{{- .Values.proxy.remoteExecutionSsh.secretName | default (printf "%s-ssh" .Release.Name) }}
 {{- end }}
 
 {{- define "registration.fullname" -}}

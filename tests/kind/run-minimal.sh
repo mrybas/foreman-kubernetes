@@ -168,6 +168,11 @@ case "${1:-}" in
       --server-cert "${certificates}/capsule.crt" --server-key "${certificates}/capsule.key" \
       --client-cert "${certificates}/capsule-client.crt" --client-key "${certificates}/capsule-client.key" \
       --secret "${capsule_release}-bundle" --apply "${capsule_namespace}" "${capsule_name}"
+    # The Smart Proxy's own SSH key (not the foreman release's) and an SSH
+    # server fixture in its namespace that trusts only that key.
+    CERT_DIR="${repo_root}/artifacts/certificates/${capsule_namespace}-${capsule_release}" \
+      SSH_TARGET=1 KUBE_CONTEXT="${context}" "${repo_root}/tests/kind/proxy-ssh.sh" \
+      "${capsule_namespace}" "${capsule_release}"
     kubectl --context "${context}" --namespace "${capsule_namespace}" rollout status deployment/postgresql --timeout=180s
     kubectl --context "${context}" --namespace "${capsule_namespace}" rollout status deployment/valkey --timeout=180s
     helm upgrade --install "${capsule_release}" "${repo_root}/charts/foreman-proxy" \
@@ -176,6 +181,8 @@ case "${1:-}" in
       --set-string service.clusterIP="${capsule_cluster_ip}" \
       --set-string "hostAliases[0].ip=${HTTPD_CLUSTER_IP:-10.96.0.80}" --set 'hostAliases[0].hostnames={foreman.test}' \
       --set 'registration.lifecycleEnvironments={Library}' \
+      --set proxy.remoteExecutionSsh.enabled=true \
+      --set-string proxy.remoteExecutionSsh.secretName="${capsule_release}-proxy-ssh" \
       --wait --wait-for-jobs --timeout 20m "${@:2}"
     ;;
   diagnostics)

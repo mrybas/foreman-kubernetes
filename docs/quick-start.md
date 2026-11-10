@@ -548,8 +548,8 @@ registration to hosts for a Foreman server with the Katello plugin that the
   `/api/registration_commands` and three more paths forwarded to the Foreman
   server
 - foreman-proxy on port 8443 with the Registration, Templates, Dynflow and
-  Logs modules. It does not load Remote Execution, Ansible or the container
-  gateway
+  Logs modules, and optionally Remote Execution and Ansible. It does not load
+  the container gateway
 
 One Service carries ports 80, 443 and 8443, so that all three answer under one
 host name, the `name` value. Katello pairs the two Smart Proxy records of a
@@ -614,10 +614,10 @@ Foreman with requests signed by the OAuth consumer, as `foremanctl` does:
 organizations and locations in `registration.organizations` and
 `registration.locations` (all that exist, when empty) to the ones already
 assigned, refreshes their features and waits until Foreman lists Registration,
-Templates, Dynflow and Logs, and Pulpcore. Then it adds the lifecycle
-environments named in `registration.lifecycleEnvironments` to `<name>-pulp` in
-each of its organizations, and sets `registration.downloadPolicy` when it is
-not empty. Organizations created later need another `helm upgrade` or an
+Templates, Dynflow and Logs (plus the optional modules below), and Pulpcore.
+Then it adds the lifecycle environments named in
+`registration.lifecycleEnvironments` to `<name>-pulp` in each of its
+organizations, and sets `registration.downloadPolicy` when it is not empty. Organizations created later need another `helm upgrade` or an
 assignment in Foreman.
 
 ### Content and hosts
@@ -649,13 +649,40 @@ Pulp administrator only the names in `foreman.clientNames`, by default the
 host name of `foreman.url`. As in the `foreman` chart, a NetworkPolicy lets
 only the httpd pods of the release connect to the Pulp API.
 
+### Remote Execution and Ansible
+
+`proxy.remoteExecutionSsh.enabled=true` turns on Remote Execution over SSH
+(feature Script) and, unless `proxy.ansible.enabled=false`, Ansible. Create a
+Secret, default `<release>-ssh`, with the SSH key pair in the keys
+`id_rsa_foreman_proxy` and `id_rsa_foreman_proxy.pub`, as for the `foreman`
+chart in [Run remote execution jobs](#run-remote-execution-jobs). The
+registration Job then also waits until Foreman has stored the public key,
+which Global Registration installs on hosts. The `foreman` release loads
+`foreman_remote_execution` with Katello, and `foreman_ansible` only with its
+own `proxy.enabled=true` (and `proxy.ansible.enabled`).
+
+The capsule runs a job only if Foreman picks it for the host. Foreman tries,
+in order, the Remote Execution proxies of the host's subnet, then any proxy in
+the host's organization and location; with the Foreman setting
+`remote_execution_prefer_registered_through_proxy` on, it tries the Smart
+Proxy the host registered through first. The capsule connects to the host
+directly, and sends the job's results to `foreman.url` with its client
+certificate.
+
+foreman-proxy keeps running jobs in memory, so a job running when its pod
+restarts is lost. Ansible runs on the capsule as the foreman-proxy user. A user
+who may write Ansible job templates can read every file and environment
+variable of that pod, including the bundle's keys.
+
 `make test-content-proxy`, after `make test`, issues the capsule certificates
 from the test CA, builds the bundle, installs the chart as `capsule.test` in
 the namespace `capsule` of the same Kind cluster, with the restricted Pod
-Security profile enforced, with its own PostgreSQL and Valkey, and runs the 12 tests in `tests/integration` marked
-`content_proxy`. They check that the Service sends each port only to its pods,
-that both records exist with their features and Default Organization's
-Library, that `/pub` serves the server CA and the consumer script, and that a
+Security profile enforced, with its own PostgreSQL and Valkey, Remote
+Execution on, and an SSH server fixture that trusts only the capsule's key.
+It runs the tests in `tests/integration` marked `content_proxy`. They check
+that the Service sends each port only to its pods, that both records exist
+with their features and Default Organization's Library, that `/pub` serves
+the server CA and the consumer script, and that a
 second `helm upgrade` adds a new organization and its Library without
 duplicate records. With a repository synced to the capsule, they fetch the
 registration script through port 8443 and check that it points at the
@@ -667,7 +694,11 @@ header in any spelling does not. A package downloads from the capsule with the
 host's entitlement certificate and not without it, matches the copy on the
 Foreman server, is fetched from the Foreman server once and stays in the
 capsule's Pulp, and still downloads while the Foreman server's httpd is scaled
-to zero.
+to zero. For a host in a subnet whose Remote Execution proxy is the capsule, a
+`Run Command - Script Default` job with `uname -a` and an Ansible job (the
+`raw` module, because the fixture has no Python) succeed, Foreman's job
+details name the capsule as the proxy that ran them, and the Foreman server's
+httpd logs the result callbacks from the capsule's pod.
 
 ## Upgrade
 

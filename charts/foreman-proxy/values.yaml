@@ -1,6 +1,7 @@
 # A Smart Proxy with content (a capsule) for a Foreman server that runs the
 # Katello plugin: its own Pulp, an httpd front door and foreman-proxy with the
-# Registration, Templates, Dynflow and Logs modules. It syncs content from the
+# Registration, Templates, Dynflow and Logs modules, and optionally Remote
+# Execution and Ansible. It syncs content from the
 # Foreman server's Pulp and forwards the subscription requests (/rhsm) of its
 # hosts to the Foreman server.
 
@@ -101,6 +102,23 @@ proxy:
     pullPolicy: IfNotPresent
   logLevel: INFO
   port: 8443
+  # Remote Execution over SSH (feature Script): the foreman-proxy pod logs in
+  # to hosts with this key and runs the job there. Foreman sends a job to a
+  # Smart Proxy of the host's subnet, or, when the Foreman setting
+  # remote_execution_prefer_registered_through_proxy is on, to the Smart Proxy
+  # the host registered through. Jobs are kept in memory: a job running when
+  # the pod restarts is lost.
+  remoteExecutionSsh:
+    enabled: false
+    # Secret with the SSH key pair, keys id_rsa_foreman_proxy and
+    # id_rsa_foreman_proxy.pub. Empty means <release>-ssh. Hosts must trust
+    # the public key; Global Registration installs it on hosts.
+    secretName: ""
+  # Ansible jobs (feature Ansible), over the same SSH key. Takes effect only
+  # with remoteExecutionSsh.enabled. The image has ansible-core and the
+  # theforeman.foreman collection; no other roles or collections.
+  ansible:
+    enabled: true
   resources:
     requests:
       cpu: 50m
@@ -113,7 +131,8 @@ proxy:
 # and <name>-pulp (https://<name>/pulp/api/v3/smart_proxy, Pulp in mirror
 # mode). It creates or updates both, adds organizations and locations, keeps
 # existing assignments, refreshes the features and waits until Foreman reports
-# them. Then it adds the lifecycle environments below to <name>-pulp.
+# them (and, with Remote Execution, has stored the SSH public key). Then it
+# adds the lifecycle environments below to <name>-pulp.
 registration:
   # Organization and location names. Empty means all that exist when the Job
   # runs.

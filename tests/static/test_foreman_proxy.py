@@ -22,6 +22,7 @@ BUNDLE = f"{RELEASE}-bundle"
 NAME = "capsule.example.test"
 FOREMAN = "foreman.example.test"
 REQUIRED = {"name": NAME, "foreman": {"url": f"https://{FOREMAN}"}}
+REX = {"proxy": {"remoteExecutionSsh": {"enabled": True}}}
 S3 = {"type": "s3", "s3": {"bucket": "pulp", "endpointUrl": "https://s3.example.test",
                            "existingSecret": "pulp-s3"}}
 
@@ -118,7 +119,7 @@ def test_renders_the_smart_proxy(manifests):
 
 
 def test_containers_use_restricted_security_context(render):
-    for values in ({}, {"pulp": {"storage": S3}}):
+    for values in ({}, {"pulp": {"storage": S3}}, REX):
         for workload in workloads(render(values)):
             pod = pod_spec(workload)
             assert pod["automountServiceAccountToken"] is False
@@ -300,6 +301,7 @@ INTENTIONAL_DIFFERENCES = {
                                 "the header lists are compared below",
     "proxy.features": "the proxy chart adds the content features",
     "proxy.fullname": "different component names",
+    "proxy.sshSecretName": "the whole release is the proxy, so the default is <release>-ssh",
     "proxy.url": "the proxy registers under its external name",
     "pulp.labels": "different chart labels",
     "pulp.selectorLabels": "different chart labels",
@@ -520,3 +522,78 @@ def test_config_changes_restart_the_pods_that_read_it(render, change, restarted)
 
     before, after = checksums(render()), checksums(render(change))
     assert {name for name in before if before[name] != after[name]} == restarted
+
+
+def proxy_modules(manifests):
+    data = config(manifests, f"{FULLNAME}-proxy")
+    return {name.removesuffix(".yml"): yaml.safe_load(body) for name, body in data.items()
+            if name.endswith(".yml") and name != "settings.yml"}
+
+
+def test_remote_execution_is_off_by_default(manifests):
+    assert set(proxy_modules(manifests)) == {"logs", "dynflow", "registration", "templates"}
+    assert "ansible.env" not in config(manifests, f"{FULLNAME}-proxy")
+    assert f"{RELEASE}-ssh" not in secret_volumes(manifests)[f"{FULLNAME}-proxy"]
+
+
+@pytest.mark.parametrize("ansible", [True, False])
+def test_remote_execution_and_ansible(render, ansible):
+    manifests = render(deep_merge(REX, {"proxy": {"ansible": {"enabled": ansible},
+                                                  "remoteExecutionSsh": {"secretName": "capsule-key"}}}))
+    modules = proxy_modules(manifests)
+    rex = modules["remote_execution_ssh"]
+    assert rex[":enabled"] == "https"
+    assert rex[":mode"] == "ssh"
+    assert rex[":ssh_identity_key_file"] == "/etc/foreman-proxy/ssh/id_rsa_foreman_proxy"
+    data = config(manifests, f"{FULLNAME}-proxy")
+    (container,) = pod_spec(manifests["Deployment", f"{FULLNAME}-proxy"])["containers"]
+    mounts = {mount["mountPath"]: mount for mount in container["volumeMounts"]}
+    assert {f"/etc/foreman-proxy/settings.d/{name}.yml" for name in modules} <= mounts.keys()
+    assert mounts["/etc/foreman-proxy/ssh"] == {"name": "ssh-key", "mountPath": "/etc/foreman-proxy/ssh",
+                                                "readOnly": True}
+    (volume,) = [v for v in pod_spec(manifests["Deployment", f"{FULLNAME}-proxy"])["volumes"]
+                 if v["name"] == "ssh-key"]
+    assert volume["secret"]["secretName"] == "capsule-key"
+    assert volume["secret"]["defaultMode"] == 0o440
+    # The key reaches the foreman-proxy pod only.
+    assert {name for name, secrets in secret_volumes(manifests).items() if "capsule-key" in secrets} == {
+        f"{FULLNAME}-proxy"}
+    job = manifests["Job", f"{FULLNAME}-registration-1"]
+    (register,) = pod_spec(job)["containers"]
+    features = env(register)["PROXY_FEATURES"]["value"].split()
+    if ansible:
+        assert modules["ansible"][":working_dir"] == "/var/tmp"
+        assert "/etc/foreman-proxy/ansible.env" in mounts
+        ansible_env = data["ansible.env"]
+        assert f'export FOREMAN_URL="https://{FOREMAN}"' in ansible_env
+        assert 'export FOREMAN_SSL_CERT="/etc/foreman-proxy/tls/client.crt"' in ansible_env
+        assert 'export FOREMAN_SSL_VERIFY="/etc/foreman-proxy/tls/server-ca.crt"' in ansible_env
+        assert env(container)["FOREMAN_PROXY_ENABLED_PLUGINS"]["value"] == "remote_execution_ssh ansible"
+        assert features == ["Ansible", "Dynflow", "Logs", "Registration", "Script", "Templates"]
+    else:
+        assert "ansible" not in modules and "ansible.env" not in data
+        assert "/etc/foreman-proxy/ansible.env" not in mounts
+        assert env(container)["FOREMAN_PROXY_ENABLED_PLUGINS"]["value"] == "remote_execution_ssh"
+        assert features == ["Dynflow", "Logs", "Registration", "Script", "Templates"]
+
+
+def test_ansible_needs_remote_execution(render):
+    manifests = render({"proxy": {"ansible": {"enabled": True}}})
+    assert "ansible" not in proxy_modules(manifests)
+
+
+def test_remote_execution_adds_no_secret_and_no_other_object(render):
+    manifests = render(REX)
+    assert set(manifests) == set(render())
+    assert not manifests.of_kind("Secret")
+    for content in config(manifests, f"{FULLNAME}-proxy").values():
+        assert "PRIVATE KEY" not in content
+
+
+def test_default_ssh_secret_name(render):
+    assert f"{RELEASE}-ssh" in secret_volumes(render(REX))[f"{FULLNAME}-proxy"]
+
+
+def test_registration_waits_for_the_ssh_public_key():
+    script = (CHART / "files" / "register.rb").read_text()
+    assert "remote_execution_pubkey" in script

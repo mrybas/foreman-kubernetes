@@ -1,5 +1,5 @@
 {{- $tls := include "proxy.tlsPath" . }}
-{{- $modules := list "logs" "dynflow" "registration" "templates" }}
+{{- $modules := include "proxy.modules" . | fromJsonArray }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -51,10 +51,10 @@ spec:
             runAsGroup: 991
             runAsUser: 991
           env:
-            # Bundler loads only the optional plugins named here, so empty
-            # loads none (Remote Execution, Ansible, container gateway).
+            # Bundler loads only the optional plugins named here; empty loads
+            # none. Unset would load all of them, the container gateway too.
             - name: FOREMAN_PROXY_ENABLED_PLUGINS
-              value: ""
+              value: {{ include "proxy.plugins" . | quote }}
           ports:
             - name: proxy-https
               containerPort: {{ .Values.proxy.port }}
@@ -68,6 +68,17 @@ spec:
             - name: configuration
               mountPath: /etc/foreman-proxy/settings.d/{{ . }}.yml
               subPath: {{ . }}.yml
+              readOnly: true
+            {{- end }}
+            {{- if has "ansible" $modules }}
+            - name: configuration
+              mountPath: /etc/foreman-proxy/ansible.env
+              subPath: ansible.env
+              readOnly: true
+            {{- end }}
+            {{- if has "remote_execution_ssh" $modules }}
+            - name: ssh-key
+              mountPath: /etc/foreman-proxy/ssh
               readOnly: true
             {{- end }}
             - name: tls
@@ -115,3 +126,14 @@ spec:
                 path: client.crt
               - key: client.key
                 path: client.key
+        {{- if has "remote_execution_ssh" $modules }}
+        - name: ssh-key
+          secret:
+            secretName: {{ include "proxy.sshSecretName" . }}
+            defaultMode: 0440
+            items:
+              - key: id_rsa_foreman_proxy
+                path: id_rsa_foreman_proxy
+              - key: id_rsa_foreman_proxy.pub
+                path: id_rsa_foreman_proxy.pub
+        {{- end }}
