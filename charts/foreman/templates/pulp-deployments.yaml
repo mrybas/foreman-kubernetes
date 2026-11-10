@@ -24,7 +24,7 @@ spec:
       labels:
         {{- include "pulp.selectorLabels" (dict "context" $ "component" $component) | nindent 8 }}
       annotations:
-        checksum/settings: {{ include "pulp.settings" $ | sha256sum }}
+        {{- include "foreman.configChecksum" (include "pulp.settings" $) | nindent 8 }}
     spec:
       {{- include "pulp.podSpec" $ | nindent 6 }}
       containers:

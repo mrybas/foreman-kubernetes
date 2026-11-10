@@ -57,6 +57,32 @@ over the tag and must be sha256:<64 hex digits>.
 {{- printf "%s-config" (include "foreman.fullname" .) }}
 {{- end }}
 
+{{/*
+Pod annotation with the sha256 of the ConfigMap data a pod reads, so that
+helm upgrade replaces the pods when that data changes. Kubernetes does not
+restart pods when a mounted ConfigMap changes, and files mounted with subPath
+never see the change. Only data is hashed, so label changes such as a new chart
+version do not restart pods. Secrets are not included: pods read credentials at
+start and need a rollout restart after a Secret changes. Takes the data as a
+string.
+*/}}
+{{- define "foreman.configChecksum" -}}
+checksum/config: {{ sha256sum . }}
+{{- end }}
+
+{{/*
+Data of a ConfigMap rendered by a template of this chart, as YAML. Takes
+(list $context "file.yaml"); the file must render exactly one ConfigMap.
+*/}}
+{{- define "foreman.configMapData" -}}
+{{- $context := index . 0 }}
+{{- $rendered := include (print $context.Template.BasePath "/" (index . 1)) $context | fromYaml }}
+{{- if not $rendered.data }}
+{{- fail (printf "%s did not render a ConfigMap with data" (index . 1)) }}
+{{- end }}
+{{- toYaml $rendered.data }}
+{{- end }}
+
 {{- define "foreman.migrationConfigName" -}}
 {{- printf "%s-migration-config" (include "foreman.fullname" .) }}
 {{- end }}

@@ -19,7 +19,7 @@ spec:
       labels:
         {{- include "candlepin.selectorLabels" . | nindent 8 }}
       annotations:
-        checksum/config: {{ include (print $.Template.BasePath "/candlepin-configmap.yaml") . | sha256sum }}
+        {{- include "foreman.configChecksum" (include "foreman.configMapData" (list . "candlepin-configmap.yaml")) | nindent 8 }}
     spec:
       automountServiceAccountToken: false
       securityContext:

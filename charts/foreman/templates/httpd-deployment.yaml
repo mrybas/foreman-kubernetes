@@ -15,7 +15,7 @@ spec:
       labels:
         {{- include "httpd.selectorLabels" . | nindent 8 }}
       annotations:
-        checksum/config: {{ include (print $.Template.BasePath "/httpd-configmap.yaml") . | sha256sum }}
+        {{- include "foreman.configChecksum" (include "foreman.configMapData" (list . "httpd-configmap.yaml")) | nindent 8 }}
     spec:
       automountServiceAccountToken: false
       securityContext:

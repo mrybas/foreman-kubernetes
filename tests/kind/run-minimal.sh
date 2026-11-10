@@ -90,7 +90,7 @@ case "${1:-}" in
       --set katello.enabled=true --set proxy.enabled=true \
       --set-string pulp.settings.smartProxyPulpUrl="https://${release}-foreman-httpd.${namespace}.svc" \
       --set-string pulp.settings.contentOrigin=https://foreman.test \
-      --wait --wait-for-jobs --timeout 30m
+      --wait --wait-for-jobs --timeout 30m "${@:2}"
     ;;
   diagnostics)
     require_cluster
@@ -107,7 +107,7 @@ case "${1:-}" in
     fi
     ;;
   *)
-    echo 'Usage: run-minimal.sh {setup|deploy|diagnostics|teardown}' >&2
+    echo 'Usage: run-minimal.sh {setup|deploy [helm option ...]|diagnostics|teardown}' >&2
     exit 2
     ;;
 esac

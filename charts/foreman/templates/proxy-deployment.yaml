@@ -23,7 +23,7 @@ spec:
         {{- include "foreman.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: proxy
       annotations:
-        checksum/config: {{ include (print $.Template.BasePath "/proxy-configmap.yaml") . | sha256sum }}
+        {{- include "foreman.configChecksum" (include "foreman.configMapData" (list . "proxy-configmap.yaml")) | nindent 8 }}
     spec:
       # With the headless Service as subdomain, the pod gets the DNS name used
       # in the default proxy.url.

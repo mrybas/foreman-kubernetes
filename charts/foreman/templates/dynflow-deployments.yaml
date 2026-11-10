@@ -39,6 +39,8 @@ spec:
       labels:
         {{- include "foreman.selectorLabels" $root | nindent 8 }}
         app.kubernetes.io/component: {{ $component }}
+      annotations:
+        {{- include "foreman.configChecksum" (include "foreman.configurationData" (dict "context" $root "web" true)) | nindent 8 }}
     spec:
       # Sidekiq waits up to 25 seconds for running jobs after SIGTERM.
       terminationGracePeriodSeconds: 45

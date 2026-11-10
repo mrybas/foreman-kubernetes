@@ -344,6 +344,88 @@ authenticate as the consumer. The repository is a copy of the Pulp project's sma
 machine that runs the tests and serves it inside the cluster at
 `http://rpm-repository/`, so the cluster needs no outbound access for it.
 
+## Upgrade
+
+Tags such as `nightly` move. To know which image runs before and after an
+upgrade, pin each image by digest. Every image value (`image`, `pulp.image`,
+`candlepin.image`, `proxy.image`, `httpd.image`, `test.image`) takes a
+`digest`, which takes precedence over `tag`, for example
+`--set-string image.digest=sha256:6e3772a9...`. The chart rejects a digest
+that is not `sha256:` followed by 64 hex digits. The Foreman image digest
+applies to the web, Dynflow, migration and Katello Job pods together.
+
+Upgrade with the same command and values as the installation, changing only
+the digests:
+
+```console
+helm upgrade foreman charts/foreman --namespace foreman --values my-values.yaml \
+  --set-string image.digest=sha256:<new digest> --wait --wait-for-jobs --timeout 30m
+```
+
+Helm runs the migration Jobs before it changes anything else, one after the
+other: Candlepin, then Foreman, then Pulp. Only when all of them succeed does
+it update the Deployments. With `--wait` it then waits for the new pods to
+be ready, and runs the Jobs that register Pulp and the Smart Proxy in Foreman.
+
+A change of values that only changes configuration also replaces pods. Every
+workload that reads a chart ConfigMap (Foreman web, the Dynflow Deployments,
+Candlepin, the Pulp Deployments, httpd and the Smart Proxy) has a
+`checksum/config` pod annotation with the sha256 of that ConfigMap data, so
+`helm upgrade` restarts exactly the workloads whose configuration changed.
+Credentials are not part of the checksum: after changing an existing Secret,
+restart the pods that read it with `kubectl rollout restart`.
+
+If a migration Job fails, Helm stops there:
+
+- `helm upgrade` exits with an error naming the Job, for example
+  `pre-upgrade hooks failed: resource Job/foreman/foreman-foreman-migrate-2 not ready. status: Failed`.
+  Helm reports this as soon as the Job reaches its `backoffLimit`, without
+  waiting for `--timeout`.
+- The new revision is marked `failed` in `helm history`. Deployments,
+  ConfigMaps and Services keep the previous revision, and the running pods
+  keep serving with the old image.
+- The failed Job and its pod stay for inspection with `kubectl logs job/<name>`.
+  Helm deletes only succeeded migration Jobs. Delete failed ones by hand when
+  you no longer need them.
+- Migrations that ran before the failed one stay applied. For example, when
+  the Pulp migration fails, the Foreman database already has the schema of the
+  new image while the old Foreman pods run on it. Database migrations cannot be
+  undone by Helm.
+
+To recover, roll forward: fix the cause (credentials, database access, image)
+and run the same `helm upgrade` again. Helm upgrades from a failed revision
+without extra flags, and every migration Job runs again under a new name,
+because the name contains the revision. Do not use `helm rollback` to undo
+migrations: it reapplies the old manifests but does not run migrations or
+restore the databases. `--rollback-on-failure` does the same automatically:
+after a failed migration it adds a `Rollback to <n>` revision and leaves the
+running pods alone. Restore the databases from a backup if you need the old
+schema.
+
+`make test-upgrade`, run in a cluster created by `make setup-kind`, installs
+the chart with the Foreman 5.0.1 release image (`UPGRADE_FROM_IMAGE_DIGEST`)
+and runs the tests in `tests/upgrade`. They upgrade to the image that the
+`nightly` tag points to when they start (`UPGRADE_TO_IMAGE_TAG`), or to
+`UPGRADE_TO_IMAGE_DIGEST` when it is set, and write both digests to
+`artifacts/upgrade/images.txt`. Old nightly digests are removed from the
+registry after a while, release tags stay. After a new release, set
+`UPGRADE_FROM_IMAGE_DIGEST` in the `Makefile` to the digest of its tag, for
+example with
+`skopeo inspect --format '{{.Digest}}' docker://quay.io/foreman/foreman:5.0.1`. For the Candlepin, Foreman and Pulp migration
+in turn, they change the database password in the Secret that the Job reads.
+Running pods keep the credentials they started with, so only the new Job
+fails. They check that `helm upgrade` to the new image fails on
+that Job, that no Deployment, ReplicaSet or pod changes, and that the Foreman
+and Katello pings succeed during and after the attempt. Then they restore the
+Secret and upgrade again, which must succeed, finish every migration Job
+before the first new ReplicaSet is created and keep data created before the
+upgrade. Then they change `foreman.externalUrl` only, which Foreman reads
+from `settings.yaml` as the `foreman_url` setting: the Foreman web and Dynflow
+pods must be replaced and report the new value, every other pod must stay,
+and a second upgrade restores the value. Finally the tests in
+`tests/integration` run against the upgraded release. Helm output of each upgrade is written to `artifacts/upgrade/`.
+CI runs `make test-upgrade` as a separate job in a new cluster.
+
 ## Access and cleanup
 
 Forward the front door Service using the test kubeconfig:
