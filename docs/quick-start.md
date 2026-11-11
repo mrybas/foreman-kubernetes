@@ -964,8 +964,9 @@ because a claim in the release namespace is deleted with it, and a
 `local-path` volume is lost with its node. Copy the directory to separate
 storage. Everything passes through the Kubernetes API with `kubectl exec` and
 `kubectl cp`, which is slow for large Pulp volumes. The scripts have no option
-to skip the content. They do not back up a `foreman-proxy` release, and
-`make test-backup` tests only the configuration that `make test` installs.
+to skip the content. `make test-backup` tests only the configuration that
+`make test` installs. For a `foreman-proxy` release, see
+[Back up a Smart Proxy with content](#back-up-a-smart-proxy-with-content).
 
 ### Back up
 
@@ -1023,6 +1024,66 @@ entitlement certificate issued before the backup and matches the original
 bytes, that the host's consumer certificate still works against `/rhsm`, and
 that both Smart Proxies point at the new namespace. Run `make diagnostics
 KIND_NAMESPACE=foreman-restore` after a failure.
+
+### Back up a Smart Proxy with content
+
+The same scripts back up and restore a `foreman-proxy` release. They find the
+chart of the release themselves:
+
+```console
+tools/backup.sh --namespace capsule --release capsule /srv/backups
+tools/restore.sh --namespace capsule-new /srv/backups/foreman-proxy-backup-20261110T120000Z
+```
+
+The backup directory is named `foreman-proxy-backup-<UTC time>`. It holds
+`pulp.dump`, `container_gateway.dump` when the container gateway is enabled,
+`pulp-content.tar.gz` (not with S3 storage), the Secrets the release reads
+(the bundle Secret, the SSH key Secret with Remote Execution, `pulp-runtime`
+and the container gateway Secret), `values.yaml` and `metadata.json`. Without
+`--online` the script refuses to start while Pulp tasks of the Smart Proxy
+run, and the Smart Proxy is unavailable while it runs. Prepare the target
+namespace with empty `pulp` and `container_gateway` databases and Valkey, as
+for a new installation.
+
+Foreman knows the Smart Proxy by `name`, and its hosts reach it by that name.
+When `name` is a host name outside the cluster, such as
+`capsule.example.test`, nothing changes in Foreman: point the name at the new
+Service, or keep the Service address with `service.clusterIP` or a
+LoadBalancer address. After `helm install` the registration Job updates the
+two records `<name>` and `<name>-pulp`; hosts, their content source and the
+lifecycle environments stay assigned.
+
+When `name` is the in-cluster Service name, such as
+`capsule-foreman-proxy.capsule.svc.cluster.local`, it contains the namespace.
+Restoring into another namespace then changes it: the script installs the
+release as `capsule-foreman-proxy.<new namespace>.svc.cluster.local` and sets
+`registration.previousName` to the old name, so that the registration Job
+renames the two records instead of adding new ones. The certificates in the
+bundle Secret name the old host, so the script stops unless a bundle Secret
+for the new name already exists in the target namespace. Before the restore:
+
+- Issue a server certificate for the new name and a client certificate with
+  the new name as CN from the same CAs, and create the bundle Secret with
+  `tools/foreman-proxy-bundle.sh`
+- Add the new name to `httpd.trustedProxyClientNames` of the `foreman`
+  release, and to `foreman.hostAliases` if it resolves the name that way
+- Hosts configured with the old name must be pointed at the new one, for
+  example by registering them again
+
+The same rename happens when arguments after `--` set another `name`.
+
+`make test-content-proxy` ends with this test. It syncs a repository of a new
+organization to the Smart Proxy, registers a host through it and downloads a
+package, which the Smart Proxy's Pulp keeps. It backs the Smart Proxy up,
+deletes the `capsule` namespace and restores into `capsule-restore`, with
+empty databases from the test fixture. Then it checks that Foreman has the
+same two Smart Proxy records with all their features after a refresh, that a
+sync to the restored Smart Proxy succeeds, that the package downloads through
+it with the entitlement certificate issued before the backup, with the same
+bytes and without a new request to the `foreman` release, and that the host's
+consumer certificate reaches `/rhsm` through it. The test leaves the Smart
+Proxy in `capsule-restore`, so run `make teardown-kind` before
+`make test-content-proxy` again.
 
 ## Access and cleanup
 

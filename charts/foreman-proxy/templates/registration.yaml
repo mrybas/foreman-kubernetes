@@ -90,6 +90,8 @@ spec:
               value: {{ include "proxy.url" . | quote }}
             - name: PROXY_FEATURES
               value: {{ include "proxy.features" . | quote }}
+            - name: PREVIOUS_NAME
+              value: {{ $registration.previousName | quote }}
             - name: ORGANIZATIONS
               value: {{ $registration.organizations | toJson | quote }}
             - name: LOCATIONS

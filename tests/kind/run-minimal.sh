@@ -12,6 +12,8 @@ capsule_namespace="${CAPSULE_NAMESPACE:-capsule}"
 capsule_release="${CAPSULE_RELEASE:-capsule}"
 capsule_name="${CAPSULE_NAME:-capsule.test}"
 capsule_cluster_ip="${CAPSULE_CLUSTER_IP:-10.96.0.81}"
+# Where the content-proxy backup test restores the Smart Proxy.
+capsule_restore_namespace="${CAPSULE_RESTORE_NAMESPACE:-${capsule_namespace}-restore}"
 context="kind-${cluster_name}"
 export KIND_EXPERIMENTAL_PROVIDER="${KIND_EXPERIMENTAL_PROVIDER:-podman}"
 export KUBECONFIG="${repo_root}/artifacts/kubeconfig"
@@ -199,12 +201,14 @@ case "${1:-}" in
     kubectl --context "${context}" --namespace "${namespace}" get events --sort-by=.lastTimestamp
     kubectl --context "${context}" --namespace "${namespace}" logs \
       --selector "app.kubernetes.io/instance=${release}" --all-containers --tail=100 --prefix
-    if kubectl --context "${context}" get namespace "${capsule_namespace}" >/dev/null 2>&1; then
-      kubectl --context "${context}" --namespace "${capsule_namespace}" get deployments,pods,services,jobs
-      kubectl --context "${context}" --namespace "${capsule_namespace}" get events --sort-by=.lastTimestamp
-      kubectl --context "${context}" --namespace "${capsule_namespace}" logs \
-        --selector "app.kubernetes.io/instance=${capsule_release}" --all-containers --tail=100 --prefix
-    fi
+    for ns in "${capsule_namespace}" "${capsule_restore_namespace}"; do
+      if kubectl --context "${context}" get namespace "${ns}" >/dev/null 2>&1; then
+        kubectl --context "${context}" --namespace "${ns}" get deployments,pods,services,jobs
+        kubectl --context "${context}" --namespace "${ns}" get events --sort-by=.lastTimestamp
+        kubectl --context "${context}" --namespace "${ns}" logs \
+          --selector "app.kubernetes.io/instance=${capsule_release}" --all-containers --tail=100 --prefix
+      fi
+    done
     ;;
   teardown)
     if [[ -f "${ownership_file}" ]]; then

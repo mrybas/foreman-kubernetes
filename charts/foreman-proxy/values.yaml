@@ -181,6 +181,12 @@ registration:
   # on_demand, immediate, streamed or inherit. Empty keeps Foreman's default
   # (the default_proxy_download_policy setting, on_demand unless changed).
   downloadPolicy: ""
+  # The former name of this Smart Proxy, after name changed (for example
+  # after tools/restore.sh into another namespace). When Foreman has no
+  # records named <name> and <name>-pulp, the Job renames <previousName> and
+  # <previousName>-pulp instead of creating new ones, so hosts keep them as
+  # registration and content source. Hosts must then reach the new name.
+  previousName: ""
   # Seconds the Job keeps retrying until Foreman accepts both records with
   # all features.
   timeoutSeconds: 600

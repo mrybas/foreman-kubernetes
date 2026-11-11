@@ -8,17 +8,25 @@
 # passwords as before, or edit the Secrets in BACKUP_DIR/secrets first).
 #
 # Steps: create the backed-up Secrets that do not exist yet in the namespace,
-# restore the three databases, create the Pulp content claim and unpack the
-# content into it, then helm install with the backed-up values and
-# HELM_INSTALL_ARGS (for example --set values that name the new namespace).
-# The chart's migration Jobs then find the restored schemas.
+# restore the databases, create the Pulp content claim and unpack the content
+# into it, then helm install with the backed-up values and HELM_INSTALL_ARGS
+# (for example --set values that name the new namespace). The chart's
+# migration Jobs then find the restored schemas.
+#
+# foreman-proxy releases: when name is a Service name in the old namespace
+# (<service>.<namespace>.svc[.cluster.local]) and the target namespace
+# differs, the release is installed as <service>.<new namespace>... and its
+# registration Job renames the two Smart Proxy records in Foreman. The same
+# rename happens when HELM_INSTALL_ARGS set another name. Then a bundle Secret
+# with certificates for the new name must exist in the namespace beforehand.
 #
 # Options:
 #   -n, --namespace NAME  target namespace (default: the one in the backup)
 #   -r, --release NAME    Helm release name (default: the one in the backup)
 #   --context NAME        kubeconfig context for kubectl and helm
-#   --chart CHART         chart to install (default: charts/foreman of this
-#                         repository); use the version that made the backup
+#   --chart CHART         chart to install (default: charts/foreman or
+#                         charts/foreman-proxy of this repository, as in the
+#                         backup); use the version that made the backup
 #   --image IMAGE         helper image with pg_restore and tar; its PostgreSQL
 #                         major version must match the server
 #                         (default docker.io/library/postgres:16-alpine,
@@ -37,11 +45,12 @@ set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/backup-common.sh"
 
 usage() {
-  sed -n '4,29p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '4,38p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
-chart="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/charts/foreman"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+chart=
 force=false
 backup_dir=
 namespace=
@@ -69,6 +78,8 @@ metadata="${backup_dir}/metadata.json"
 [[ -f "${backup_dir}/values.yaml" ]] || die "${backup_dir}/values.yaml not found"
 [[ -n "${namespace}" ]] || namespace=$(jq -r .namespace "${metadata}")
 [[ -n "${release}" ]] || release=$(jq -r .release "${metadata}")
+chart_name=$(jq -r '.chartName // "foreman"' "${metadata}")
+[[ -n "${chart}" ]] || chart="${repo_root}/charts/${chart_name}"
 databases=()
 while IFS= read -r database; do
   [[ -f "${backup_dir}/${database}.dump" ]] || die "${backup_dir}/${database}.dump not found"
@@ -92,8 +103,37 @@ log "Restoring ${backup_dir} as release ${release} in namespace ${namespace}"
 
 # Values the chart will run with: chart defaults, backed-up values and the
 # extra arguments.
-values=$(hm install "${release_args[@]}" ${helm_args[@]+"${helm_args[@]}"} --dry-run=client --output json |
-  jq -c '.chart.values * .config')
+computed_values() {
+  hm install "${release_args[@]}" ${helm_args[@]+"${helm_args[@]}"} --dry-run=client --output json |
+    jq -c '.chart.values * .config'
+}
+values=$(computed_values)
+
+# A Smart Proxy with content is known to Foreman and to its hosts by its name.
+if [[ "${chart_name}" == foreman-proxy ]]; then
+  old_name=$(jq -r '.proxyName // ""' "${metadata}")
+  old_namespace=$(jq -r .namespace "${metadata}")
+  name=$(jq -r .name <<<"${values}")
+  if [[ "${name}" == "${old_name}" && "${namespace}" != "${old_namespace}" ]]; then
+    new_name=$(proxy_name_for_namespace "${old_name}" "${old_namespace}" "${namespace}")
+    if [[ -n "${new_name}" ]]; then
+      log "name ${old_name} is a Service name in namespace ${old_namespace}; installing as ${new_name}"
+      helm_args+=(--set-string "name=${new_name}")
+      name=${new_name}
+    fi
+  fi
+  if [[ -n "${old_name}" && "${name}" != "${old_name}" ]]; then
+    if [[ -z "$(jq -r '.registration.previousName // ""' <<<"${values}")" ]]; then
+      helm_args+=(--set-string "registration.previousName=${old_name}")
+    fi
+    bundle=$(jq -r '.bundle.secretName // ""' <<<"${values}")
+    [[ -n "${bundle}" ]] || bundle="${release}-bundle"
+    kc get secret "${bundle}" >/dev/null 2>&1 ||
+      die "the name changes from ${old_name} to ${name}: create the bundle Secret ${bundle} with certificates for ${name} first (tools/foreman-proxy-bundle.sh), and add ${name} to httpd.trustedProxyClientNames of the foreman release"
+    log "The Smart Proxy records ${old_name} and ${old_name}-pulp will be renamed to ${name} and ${name}-pulp"
+    values=$(computed_values)
+  fi
+fi
 
 for secret in "${secrets[@]}"; do
   if kc get secret "${secret}" >/dev/null 2>&1; then

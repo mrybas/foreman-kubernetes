@@ -105,6 +105,9 @@ Data of a ConfigMap rendered by a template of this chart, as YAML. Takes
 {{- range .Values.serverAliases }}
 {{- include "foreman-proxy.checkHostName" (dict "what" "serverAliases" "value" .) }}
 {{- end }}
+{{- with .Values.registration.previousName }}
+{{- include "foreman-proxy.checkHostName" (dict "what" "registration.previousName" "value" .) }}
+{{- end }}
 {{- if not (hasPrefix "https://" .Values.foreman.url) }}
 {{- fail "foreman.url is required and must start with https://" }}
 {{- end }}

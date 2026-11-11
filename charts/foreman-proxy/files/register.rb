@@ -9,7 +9,10 @@
 #   PROXY_NAME  foreman-proxy, features PROXY_FEATURES
 #
 # Each is created or updated (URL, organizations and locations added to the
-# existing ones), then refreshed until Foreman reports the expected features
+# existing ones). When no record has the name yet but one has the name derived
+# from PREVIOUS_NAME (the Smart Proxy got a new host name, for example after a
+# restore into another namespace), that record is renamed, so that hosts keep
+# it as their registration and content source. Then each is refreshed until Foreman reports the expected features
 # and, with the Script feature, has stored the SSH public key.
 # Then the lifecycle environments named in LIFECYCLE_ENVIRONMENTS are added to
 # the Pulp record in each of its organizations. Every step is idempotent.
@@ -28,9 +31,11 @@ CA_FILE = ENV.fetch('FOREMAN_CA_FILE')
 CONSUMER_KEY = ENV.fetch('OAUTH_CONSUMER_KEY')
 CONSUMER_SECRET = ENV.fetch('OAUTH_CONSUMER_SECRET')
 DOWNLOAD_POLICY = ENV.fetch('DOWNLOAD_POLICY', '')
-PULP = { name: ENV.fetch('PULP_NAME'), url: ENV.fetch('PULP_URL'), features: %w[Pulpcore] }.freeze
+PREVIOUS_NAME = ENV.fetch('PREVIOUS_NAME', '')
+PULP = { name: ENV.fetch('PULP_NAME'), url: ENV.fetch('PULP_URL'), features: %w[Pulpcore],
+         previous: PREVIOUS_NAME.empty? ? nil : "#{PREVIOUS_NAME}-pulp" }.freeze
 PROXY = { name: ENV.fetch('PROXY_NAME'), url: ENV.fetch('PROXY_URL'),
-          features: ENV.fetch('PROXY_FEATURES').split }.freeze
+          features: ENV.fetch('PROXY_FEATURES').split, previous: PREVIOUS_NAME.empty? ? nil : PREVIOUS_NAME }.freeze
 ORGANIZATIONS = JSON.parse(ENV.fetch('ORGANIZATIONS', '[]'))
 LOCATIONS = JSON.parse(ENV.fetch('LOCATIONS', '[]'))
 ENVIRONMENTS = JSON.parse(ENV.fetch('LIFECYCLE_ENVIRONMENTS', '[]'))
@@ -103,18 +108,26 @@ def ids(kind, names)
   end
 end
 
+def find_proxy(name)
+  search = { 'search' => %(name = "#{name}"), 'per_page' => PER_PAGE }
+  api('GET', '/api/smart_proxies', query: search)['results'].find { |proxy| proxy['name'] == name }
+end
+
 def register(record, organization_ids, location_ids, extra = {})
-  search = { 'search' => %(name = "#{record[:name]}"), 'per_page' => PER_PAGE }
-  found = api('GET', '/api/smart_proxies', query: search)['results'].find { |proxy| proxy['name'] == record[:name] }
+  found = find_proxy(record[:name])
+  action = 'Updated'
+  if !found && record[:previous] && (found = find_proxy(record[:previous]))
+    action = "Renamed from #{record[:previous]}:"
+  end
   if found
     current = api('GET', "/api/smart_proxies/#{found['id']}")
     attributes = {
+      'name' => record[:name],
       'url' => record[:url],
       'organization_ids' => current.fetch('organizations', []).map { |o| o['id'] } | organization_ids,
       'location_ids' => current.fetch('locations', []).map { |l| l['id'] } | location_ids
     }.merge(extra)
     id = api('PUT', "/api/smart_proxies/#{found['id']}", body: { 'smart_proxy' => attributes })['id']
-    action = 'Updated'
   else
     attributes = { 'name' => record[:name], 'url' => record[:url], 'organization_ids' => organization_ids,
                    'location_ids' => location_ids }.merge(extra)

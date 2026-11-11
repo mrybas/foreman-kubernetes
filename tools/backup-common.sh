@@ -9,6 +9,8 @@ helper_image=docker.io/library/postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf4
 helper_deadline=21600
 namespace=foreman
 release=foreman
+# foreman or foreman-proxy: the chart of the release.
+chart_name=foreman
 kube_args=()
 helm_kube_args=()
 
@@ -48,9 +50,32 @@ helper_name() {
   printf '%s-backup-helper' "${release}"
 }
 
+# release_chart_name: name of the chart of the release, without its version.
+release_chart_name() {
+  hm list --filter "^${release}\$" --output json |
+    jq -r '.[0].chart // empty | sub("-v?[0-9]+\\.[0-9]+\\.[0-9]+.*$"; "")'
+}
+
+# proxy_name_for_namespace NAME OLD NEW: when NAME, the host name of a
+# foreman-proxy release, is an in-cluster Service name in namespace OLD
+# (<service>.OLD.svc or <service>.OLD.svc.cluster.local), print the same name
+# in namespace NEW. Print nothing for other names.
+proxy_name_for_namespace() {
+  local name=$1 old=$2 new=$3 service suffix
+  case "${name}" in
+    *."${old}".svc) suffix=svc ;;
+    *."${old}".svc.cluster.local) suffix=svc.cluster.local ;;
+    *) return 0 ;;
+  esac
+  service=${name%."${old}.${suffix}"}
+  [[ -n "${service}" && "${service}" != *.* ]] || return 0
+  printf '%s.%s.%s\n' "${service}" "${new}" "${suffix}"
+}
+
 # Script run inside the helper pod: db.sh COMPONENT COMMAND [ARGS...] runs a
-# PostgreSQL client against the database of COMPONENT (foreman, candlepin or
-# pulp) with the credentials the chart gives that component. Credentials come
+# PostgreSQL client against the database of COMPONENT (foreman, candlepin,
+# pulp or container_gateway) with the credentials the chart gives that
+# component. Credentials come
 # from Secret references in the pod environment and never leave the pod.
 # shellcheck disable=SC2016
 helper_db_script='
@@ -80,6 +105,11 @@ case "${component}" in
       PGPASSWORD="${PULP_PGPASSWORD}" PGSSLMODE="${PULP_PGSSLMODE}"
     database=${PULP_PGDATABASE}
     ;;
+  container_gateway)
+    export PGHOST="${GATEWAY_PGHOST}" PGPORT="${GATEWAY_PGPORT}" PGUSER="${GATEWAY_PGUSER}" \
+      PGPASSWORD="${GATEWAY_PGPASSWORD}" PGSSLMODE="${GATEWAY_PGSSLMODE}"
+    database=${GATEWAY_PGDATABASE}
+    ;;
   *)
     echo "unknown component ${component}" >&2
     exit 2
@@ -103,8 +133,9 @@ helper_sh() {
 }
 
 # helper_start VALUES_JSON [CLAIM] [READ_ONLY]: start the helper Job with the
-# database credentials of the release described by the computed chart values,
-# and the Pulp content claim mounted at /var/lib/pulp when CLAIM is set.
+# database credentials of the release described by the computed chart values
+# of chart_name, and the Pulp content claim mounted at /var/lib/pulp when
+# CLAIM is set.
 helper_start() {
   local values=$1 claim=${2:-} read_only=${3:-false} name
   name=$(helper_name)
@@ -113,12 +144,14 @@ helper_start() {
     --argjson values "${values}" \
     --arg name "${name}" \
     --arg release "${release}" \
+    --arg chart "${chart_name}" \
     --arg image "${helper_image}" \
     --arg claim "${claim}" \
     --argjson readOnly "${read_only}" \
     --argjson deadline "${helper_deadline}" '
     def ref($secret; $key): {valueFrom: {secretKeyRef: {name: $secret, key: $key}}};
     $values as $v |
+    ($chart == "foreman") as $foreman |
     {
       apiVersion: "batch/v1",
       kind: "Job",
@@ -165,21 +198,30 @@ helper_start() {
                 allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}, runAsNonRoot: true
               },
               env: ([
-                {name: "HOME", value: "/work"},
+                {name: "HOME", value: "/work"}
+              ] + (if $foreman then [
                 ({name: "FOREMAN_DATABASE_URL"} + ref($v.foreman.existingSecret; $v.foreman.databaseUrlSecretKey)),
                 {name: "FOREMAN_PGSSLMODE", value: ($v.foreman.database.sslMode | tostring)}
-              ] + (if $v.candlepin.enabled then [
+              ] else [] end) + (if $foreman and $v.candlepin.enabled then [
                 ({name: "CANDLEPIN_JDBC_URL"} + ref($v.candlepin.existingSecret; $v.candlepin.databaseUrlSecretKey)),
                 ({name: "CANDLEPIN_PGUSER"} + ref($v.candlepin.existingSecret; $v.candlepin.databaseUsernameSecretKey)),
                 ({name: "CANDLEPIN_PGPASSWORD"} + ref($v.candlepin.existingSecret; $v.candlepin.databasePasswordSecretKey))
-              ] else [] end) + (if $v.pulp.enabled then [
+              ] else [] end) + (if ($foreman | not) or $v.pulp.enabled then [
                 {name: "PULP_PGHOST", value: ($v.pulp.database.host | tostring)},
                 {name: "PULP_PGPORT", value: ($v.pulp.database.port | tostring)},
                 {name: "PULP_PGDATABASE", value: ($v.pulp.database.name | tostring)},
                 {name: "PULP_PGUSER", value: ($v.pulp.database.user | tostring)},
                 {name: "PULP_PGSSLMODE", value: ($v.pulp.database.sslMode | tostring)},
                 ({name: "PULP_PGPASSWORD"} + ref($v.pulp.existingSecret; $v.pulp.databasePasswordSecretKey))
-              ] else [] end)),
+              ] else [] end) + (if ($foreman | not) and $v.proxy.containerGateway.enabled then
+                ($v.proxy.containerGateway.database as $d | [
+                  {name: "GATEWAY_PGHOST", value: ($d.host | tostring)},
+                  {name: "GATEWAY_PGPORT", value: ($d.port | tostring)},
+                  {name: "GATEWAY_PGDATABASE", value: ($d.name | tostring)},
+                  {name: "GATEWAY_PGUSER", value: ($d.user | tostring)},
+                  {name: "GATEWAY_PGSSLMODE", value: ($d.sslMode | tostring)},
+                  ({name: "GATEWAY_PGPASSWORD"} + ref($d.existingSecret; $d.passwordSecretKey))
+                ]) else [] end)),
               resources: {requests: {cpu: "50m", memory: "128Mi"}, limits: {memory: "1Gi"}},
               volumeMounts: ([{name: "work", mountPath: "/work"}] +
                 (if $claim == "" then [] else [{name: "pulp", mountPath: "/var/lib/pulp", readOnly: $readOnly}] end))

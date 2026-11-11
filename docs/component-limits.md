@@ -32,12 +32,13 @@ drained or lost, until Kubernetes starts a replacement pod.
 | foreman-proxy | always 1 | Running Remote Execution and Ansible jobs, in memory. Container gateway data in PostgreSQL | See [Remote Execution and Ansible](quick-start.md#remote-execution-and-ansible) |
 | Pulp API, content app, worker | `pulp.api.replicas`, `pulp.content.replicas`, `pulp.worker.replicas` | As in the `foreman` chart | As in the `foreman` chart |
 
-The backup scripts do not cover a `foreman-proxy` release.
+`tools/backup.sh` and `tools/restore.sh` also cover a `foreman-proxy` release. See
+[Back up a Smart Proxy with content](quick-start.md#back-up-a-smart-proxy-with-content).
 
 ## Services the charts do not install
 
 | Service | Used by | State | Limits |
 | --- | --- | --- | --- |
-| PostgreSQL | Foreman, Candlepin, Pulp, the container gateway | Every database | Tested with PostgreSQL 16 in a single pod. `tools/backup.sh` dumps the databases of the `foreman` chart, not the container gateway database. Availability and replication are up to the database operator |
+| PostgreSQL | Foreman, Candlepin, Pulp, the container gateway | Every database | Tested with PostgreSQL 16 in a single pod. `tools/backup.sh` dumps the databases of both charts, including the container gateway database. Availability and replication are up to the database operator |
 | Valkey or Redis | Dynflow, the Rails cache, Pulp | Task queue and caches | Not backed up. Tested only without Transport Layer Security (TLS); a private certificate authority for Dynflow's Redis connection needs [foreman#11304](https://github.com/theforeman/foreman/pull/11304) |
 | S3-compatible object store | Pulp with `pulp.storage.type=s3` | Pulp content | Tested with MinIO. Not backed up by `tools/backup.sh` |

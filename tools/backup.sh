@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Back up a release of the foreman Helm chart to a local directory.
+# Back up a release of the foreman or foreman-proxy Helm chart to a local
+# directory.
 #
 # Usage: tools/backup.sh [OPTIONS] DESTINATION
 #
-# Creates DESTINATION/foreman-backup-<UTC timestamp>/ with the foreman,
-# candlepin and pulp database dumps (pg_dump custom format), the Pulp content
+# Creates DESTINATION/<chart>-backup-<UTC timestamp>/ with the database dumps
+# (pg_dump custom format; foreman, candlepin and pulp for the foreman chart,
+# pulp and container_gateway for the foreman-proxy chart), the Pulp content
 # (media directory of the Pulp volume, not with pulp.storage.type s3), the
 # Secrets the release reads, the user-supplied chart values and metadata.json.
 #
@@ -16,20 +18,21 @@
 #                         major version must match the server
 #                         (default docker.io/library/postgres:16-alpine,
 #                         pinned by digest)
-#   --online              keep the release running; the copies of the three
+#   --online              keep the release running; the copies of the
 #                         databases and the content are then not taken at the
 #                         same instant
 #
 # Without --online the script scales every Deployment of the release to zero,
 # takes the copies and scales them back. It refuses to start while Foreman or
-# Pulp tasks are running. The backup contains secrets: keep it private.
+# Pulp tasks of the release are running. The backup contains secrets: keep it
+# private.
 set -euo pipefail
 
 # shellcheck source=tools/backup-common.sh
 . "$(dirname "${BASH_SOURCE[0]}")/backup-common.sh"
 
 usage() {
-  sed -n '4,24p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '5,28p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -52,11 +55,23 @@ require_commands kubectl helm jq
 
 values=$(hm get values "${release}" --all --output json) ||
   die "release ${release} not found in namespace ${namespace}"
-pulp_enabled=$(jq -r '.pulp.enabled' <<<"${values}")
-candlepin_enabled=$(jq -r '.candlepin.enabled' <<<"${values}")
-databases=(foreman)
-[[ "${candlepin_enabled}" != true ]] || databases+=(candlepin)
-[[ "${pulp_enabled}" != true ]] || databases+=(pulp)
+chart_name=$(release_chart_name)
+case "${chart_name}" in
+  foreman)
+    pulp_enabled=$(jq -r '.pulp.enabled' <<<"${values}")
+    databases=(foreman)
+    [[ "$(jq -r '.candlepin.enabled' <<<"${values}")" != true ]] || databases+=(candlepin)
+    [[ "${pulp_enabled}" != true ]] || databases+=(pulp)
+    ;;
+  foreman-proxy)
+    # A Smart Proxy with content always has Pulp.
+    pulp_enabled=true
+    databases=(pulp)
+    [[ "$(jq -r '.proxy.containerGateway.enabled' <<<"${values}")" != true ]] ||
+      databases+=(container_gateway)
+    ;;
+  *) die "release ${release} uses chart ${chart_name:-unknown}, not foreman or foreman-proxy" ;;
+esac
 claim=
 pulp_storage=$(jq -r '.pulp.storage.type // "filesystem"' <<<"${values}")
 if [[ "${pulp_enabled}" == true && "${pulp_storage}" == s3 ]]; then
@@ -72,9 +87,9 @@ fi
 
 umask 077
 mkdir -p "${destination}"
-backup_dir="${destination}/foreman-backup-$(date -u +%Y%m%dT%H%M%SZ)"
+backup_dir="${destination}/${chart_name}-backup-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir "${backup_dir}" "${backup_dir}/secrets"
-log "Backing up release ${release} in namespace ${namespace} to ${backup_dir}"
+log "Backing up ${chart_name} release ${release} in namespace ${namespace} to ${backup_dir}"
 
 hm get values "${release}" --output yaml \
   >"${backup_dir}/values.yaml"
@@ -126,11 +141,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Same check as foremanctl: no backup while tasks change the data.
-running=$(helper_db foreman psql --no-psqlrc --tuples-only --no-align --command \
-  "SELECT count(*) FROM foreman_tasks_tasks WHERE state NOT IN ('stopped', 'paused', 'scheduled')" \
-  2>/dev/null || echo 0)
-[[ "${running}" == 0 ]] || die "${running} Foreman task(s) are running; wait for them and retry"
+# Same check as foremanctl: no backup while tasks change the data. A Smart
+# Proxy with content has no Foreman database; its Pulp tasks are checked.
+if [[ "${chart_name}" == foreman ]]; then
+  running=$(helper_db foreman psql --no-psqlrc --tuples-only --no-align --command \
+    "SELECT count(*) FROM foreman_tasks_tasks WHERE state NOT IN ('stopped', 'paused', 'scheduled')" \
+    2>/dev/null || echo 0)
+  [[ "${running}" == 0 ]] || die "${running} Foreman task(s) are running; wait for them and retry"
+fi
 if [[ "${pulp_enabled}" == true ]]; then
   running=$(helper_db pulp psql --no-psqlrc --tuples-only --no-align --command \
     "SELECT count(*) FROM core_task WHERE state IN ('running', 'waiting')")
@@ -177,17 +195,19 @@ jq --null-input \
   --arg created "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --arg namespace "${namespace}" \
   --arg release "${release}" \
+  --arg chartName "${chart_name}" \
+  --arg proxyName "$(jq -r 'if .name | type == "string" then .name else "" end' <<<"${values}")" \
   --arg mode "$([[ "${online}" == true ]] && echo online || echo offline)" \
   --arg claim "${claim}" \
   --argjson chart "${chart}" \
   --argjson images "${images}" \
   --args '{
     created: $created, namespace: $namespace, release: $release, mode: $mode,
-    chart: $chart, images: $images,
+    chartName: $chartName, chart: $chart, images: $images,
     databases: ($ARGS.positional[0] | split(" ")),
     secrets: ($ARGS.positional[1] | split(" ") | map(select(length > 0))),
     pulpContent: ($claim != "")
-  }' "${databases[*]}" "${secrets[*]}" >"${backup_dir}/metadata.json"
+  } + (if $chartName == "foreman-proxy" then {proxyName: $proxyName} else {} end)' "${databases[*]}" "${secrets[*]}" >"${backup_dir}/metadata.json"
 
 log "Backup complete: ${backup_dir}"
 printf '%s\n' "${backup_dir}"
