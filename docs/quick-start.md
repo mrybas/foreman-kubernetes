@@ -1,11 +1,32 @@
-# Minimal Foreman quick start
+# Foreman quick start
 
-This experimental, unsupported milestone installs a single core Foreman web pod
-backed by PostgreSQL. Optionally it adds Dynflow with the Foreman Tasks plugin
-for background tasks, Pulp, Candlepin, an HTTPS front door, the Katello
-plugin, and a Smart Proxy for Remote Execution and Ansible. A second chart,
-`foreman-proxy`, adds a [Smart Proxy with content](#smart-proxy-with-content).
-Neither enables high availability or production ingress.
+The `foreman` Helm chart in `charts/foreman` installs Foreman backed by an
+existing PostgreSQL database. Optionally it adds Dynflow with the Foreman
+Tasks plugin for background tasks, an HTTPS front door, Pulp, Candlepin, the
+Katello plugin, and a Smart Proxy for Remote Execution and Ansible. A second
+chart, `foreman-proxy`, adds a
+[Smart Proxy with content](#smart-proxy-with-content). Both are experimental
+and unsupported. Neither enables high availability or production ingress.
+[Component limits](component-limits.md) lists the replicas and known limits of
+each component.
+
+## Configurations
+
+Each configuration needs the values in its row. The chart refuses to render
+when a required value is missing.
+
+| Configuration | Values | Section |
+| --- | --- | --- |
+| Foreman only | The defaults | [Install in your own cluster](#install-in-your-own-cluster) |
+| Background tasks | `dynflow.enabled` | [Run background tasks](#run-background-tasks) |
+| HTTPS | `certificates.enabled`, `httpd.enabled` | [Provide certificates](#provide-certificates), [HTTPS front door](#https-front-door) |
+| Remote Execution and Ansible | `proxy.enabled`, which needs `certificates.enabled` and `dynflow.enabled` | [Run remote execution jobs](#run-remote-execution-jobs) |
+| Foreman with the Katello plugin | `katello.enabled` together with `dynflow.enabled`, `pulp.enabled`, `candlepin.enabled`, `certificates.enabled`, `httpd.enabled` and an `https://` `foreman.externalUrl` | [Enable Katello](#enable-katello) |
+| Smart Proxy with content | A `foreman-proxy` release next to a `foreman` release with Katello | [Smart Proxy with content](#smart-proxy-with-content) |
+
+`make test` installs the full configuration with Katello and the Smart Proxy.
+The other combinations are covered only by the static render tests
+(`make test-static`).
 
 ## Dependencies
 
@@ -40,37 +61,19 @@ across commands if that name is already in use. To use Docker explicitly, set
 test certificates and a test SSH key, and installs the chart with the HTTPS
 front door, Dynflow, Pulp, Candlepin, Katello and the Smart Proxy enabled.
 Helm waits for the migration Jobs, the ready Deployments and the Jobs that
-register Pulp and the Smart Proxy in Foreman.
-Then [pytest-helm-charts](https://github.com/giantswarm/pytest-helm-charts) connects
-to that cluster and runs the 68 tests in `tests/integration` that are not
-marked `backup` (see [Back up and restore](#back-up-and-restore)) or
-`content_proxy` (see [Smart Proxy with content](#smart-proxy-with-content)); the 6 tests
-for [Pulp content in S3](#store-pulp-content-in-s3) are skipped unless
-`PULP_STORAGE=s3`. For Foreman:
-the web Deployment is available, the API reports an active database, the seeded
-administrator can query the users API, the web pod has the CA bundle from its
-Secret, and the `foreman` user in the web pod can read the client key and verify
-the client certificate against the CA bundle. The Dynflow tests are described in
-[Run background tasks](#run-background-tasks). For Pulp: the api, content and
-worker Deployments are available on one node, the status API reports online
-api, content and worker processes with database and Valkey connected, the API
-answers only with a known `REMOTE-USER`, only pods allowed by the NetworkPolicy
-reach the API, and the content app answers. For Candlepin: its Deployment is
-available, `/candlepin/status` reports mode `NORMAL` over HTTPS verified against
-the CA bundle for each name in the server certificate, another name is
-rejected, and the log contains no credentials. For the front door: HTTPS with
-the server certificate verified for the FQDN and the in-cluster Service name,
-the redirect from HTTP to HTTPS, the CA download under `/pub` over both
-protocols, that client-supplied `REMOTE-USER` and `SSL-CLIENT-*` headers in any
-spelling do not log anyone in, that client-supplied `X-Forwarded-*` headers
-neither change the client address Foreman sees nor make plain HTTP count as
-HTTPS, that a client certificate from the CA is accepted and a self-signed one
-is rejected, that only the httpd pods of the release can connect to the
-Foreman web port, and that the Pulp API through httpd accepts the Foreman
-client certificate as the Pulp administrator and refuses clients without it.
-The Katello and Smart Proxy tests are described in
-[Enable Katello](#enable-katello) and
-[Run remote execution jobs](#run-remote-execution-jobs).
+register Pulp and the Smart Proxy in Foreman. `tests/kind/run-minimal.sh`
+holds the full list of Secrets and values it uses.
+Then [pytest-helm-charts](https://github.com/giantswarm/pytest-helm-charts)
+connects to that cluster and runs the 68 tests in `tests/integration` that are
+not marked `backup` (see [Back up and restore](#back-up-and-restore)) or
+`content_proxy` (see [Smart Proxy with content](#smart-proxy-with-content)).
+The 6 tests for [Pulp content in S3](#store-pulp-content-in-s3) are skipped
+unless `PULP_STORAGE=s3`. For Foreman they check that the web Deployment is
+available, the API reports an active database, the seeded administrator can
+query the users API, the web pod has the certificate authority (CA) bundle
+from its Secret, and the `foreman` user in the web pod can read the client key
+and verify the client certificate against the CA bundle. The tests of the
+other components are described in their sections below.
 Pytest prints the test count and writes `artifacts/junit.xml` for CI reporting.
 The optional in-cluster smoke test can also be run with `helm test`.
 
@@ -79,6 +82,96 @@ The cluster stays running after the test. Inspect a failed installation with:
 ```console
 make diagnostics
 ```
+
+## Install in your own cluster
+
+The chart installs no database, cache or certificates. Create them first.
+
+PostgreSQL needs one database and owner role per component:
+
+| Database | Used when | Connection settings |
+| --- | --- | --- |
+| `foreman` | Always | URL in the runtime Secret (`foreman.databaseUrlSecretKey`), Transport Layer Security (TLS) mode `foreman.database.sslMode` |
+| `candlepin` | `candlepin.enabled` | Java Database Connectivity (JDBC) URL, user and password in the Candlepin Secret, see [Enable Candlepin](#enable-candlepin) |
+| `pulp` | `pulp.enabled` | `pulp.database.*`, password in the Pulp Secret, see [Enable Pulp](#enable-pulp) |
+| `container_gateway` | `foreman-proxy` chart with the container gateway | `proxy.containerGateway.database.*`, see [Container gateway](#container-gateway) |
+
+The databases must exist before the first install; the migration Jobs create
+the schemas. The tests use PostgreSQL 16. Each Foreman web pod opens up to
+`foreman.puma.workers` × (`foreman.puma.threadsMax` + 4) connections, as
+foremanctl sets it (the 4 are for threads such as the Katello event daemon),
+and each Dynflow pod its concurrency + 5; leave room for Pulp, Candlepin and
+the migration Jobs in `max_connections`. Dynflow and Pulp also need Valkey or
+Redis, see [Run background tasks](#run-background-tasks).
+
+The runtime Secret, default `foreman-runtime`, holds `DATABASE_URL`,
+`ENCRYPTION_KEY` (decrypts passwords stored in the database; keep it),
+`SECRET_KEY_BASE`, `SEED_ADMIN_USER` and `SEED_ADMIN_PASSWORD`. The keys are
+named under `foreman` in `charts/foreman/values.yaml`. Foreman alone then
+installs with:
+
+```console
+kubectl create namespace foreman
+kubectl --namespace foreman create secret generic foreman-runtime \
+  --from-literal=DATABASE_URL='postgresql://foreman:<password>@postgresql.example.com:5432/foreman' \
+  --from-literal=ENCRYPTION_KEY="$(openssl rand -hex 16)" \
+  --from-literal=SECRET_KEY_BASE="$(openssl rand -hex 32)" \
+  --from-literal=SEED_ADMIN_USER=admin --from-literal=SEED_ADMIN_PASSWORD='<password>'
+helm install foreman charts/foreman --namespace foreman \
+  --set-string foreman.fqdn=foreman.example.com \
+  --set-string foreman.externalUrl=http://foreman.example.com \
+  --wait --wait-for-jobs --timeout 30m
+```
+
+This serves plain HTTP on the `foreman-foreman` Service, port 3000. Foreman
+answers only requests for `foreman.fqdn` and refuses other host names with
+HTTP 403, so resolve that name to the Service or send it as the `Host` header:
+
+```console
+kubectl --namespace foreman port-forward service/foreman-foreman 3000:3000
+curl -H 'Host: foreman.example.com' http://localhost:3000/api/v2/ping
+```
+
+For Foreman with Katello, create the Secrets from the sections below (runtime
+Secret with `REDIS_URL`, the certificate Secrets, `pulp-runtime` and
+`candlepin-runtime`). Dynflow and Pulp can share one Valkey, see
+[Enable Pulp](#enable-pulp). Save a values file such as the one below as
+`katello.yaml`:
+
+```yaml
+foreman:
+  fqdn: foreman.example.com
+  externalUrl: https://foreman.example.com
+  trustedProxies:
+    - 10.244.0.0/16 # the pod network range of the cluster
+certificates:
+  enabled: true
+httpd:
+  enabled: true
+dynflow:
+  enabled: true
+candlepin:
+  enabled: true
+pulp:
+  enabled: true
+  database:
+    host: postgresql.example.com
+  settings:
+    smartProxyPulpUrl: https://foreman-foreman-httpd.foreman.svc
+katello:
+  enabled: true
+```
+
+and install with it. `--wait-for-jobs` waits for the Job that registers Pulp in
+Foreman after the install:
+
+```console
+helm install foreman charts/foreman --namespace foreman --values katello.yaml \
+  --wait --wait-for-jobs --timeout 30m
+```
+
+Reach Foreman through the HTTPS front door, as in
+[Access and cleanup](#access-and-cleanup).
 
 ## Provide certificates
 
@@ -159,7 +252,7 @@ client certificate, and the proxy accepts only the names in
 
 | Secret | Type and keys | Contents |
 | --- | --- | --- |
-| `foreman-proxy-tls` | `kubernetes.io/tls`: `tls.crt`, `tls.key` | Proxy server certificate. Its subject alternative names (SANs) must include the host name of `proxy.url` |
+| `foreman-proxy-tls` | `kubernetes.io/tls`: `tls.crt`, `tls.key` | Proxy server certificate. Its SANs must include the host name of `proxy.url` |
 | `foreman-proxy-client-tls` | `kubernetes.io/tls`: `tls.crt`, `tls.key` | Proxy client certificate, needed when `proxy.foremanUrl` is `https://`. Its CN or a SAN must be the host name of `proxy.url`, and its issuer must be in the `certificates.ca` bundle |
 | `foreman-proxy-ssh` | `id_rsa_foreman_proxy`, `id_rsa_foreman_proxy.pub` | SSH key pair the proxy logs in to hosts with |
 
@@ -199,13 +292,13 @@ resolve by name, set the host parameter `remote_execution_connect_by_ip` to
 `true`.
 
 `make test` checks that the proxy is registered with those features and
-without Pulp, that Foreman stores the public key from the Secret, that it calls Foreman through httpd with a client certificate
-named after its URL host, that a feature refresh works, that the proxy serves
-the public key from the Secret,
-and that a `Run Command - Script Default` job with `uname -a` succeeds on an
-SSH server fixture. To run the same job against another machine that trusts
-the key, set `REX_TARGET_IP` (and optionally `REX_TARGET_PORT`,
-`REX_TARGET_USER`, `REX_TARGET_NAME`) when running pytest.
+without Pulp, that Foreman stores the public key from the Secret, that the
+proxy calls Foreman through httpd with a client certificate named after its
+URL host, that a feature refresh works, that the proxy serves the public key
+from the Secret, and that a `Run Command - Script Default` job with `uname -a`
+succeeds on an SSH server fixture. To run the same job against another
+machine that trusts the key, set `REX_TARGET_IP` (and optionally
+`REX_TARGET_PORT`, `REX_TARGET_USER`, `REX_TARGET_NAME`) when running pytest.
 
 ## Enable Pulp
 
@@ -247,6 +340,12 @@ client certificate. A NetworkPolicy lets only pods labelled
 Anyone who can create pods in the namespace can give a pod these labels. On
 clusters whose network plugin ignores NetworkPolicy, any pod that reaches
 the API Service can act as any Pulp user.
+
+`make test` checks that the api, content and worker Deployments are available
+on one node, that the status API reports online api, content and worker
+processes with database and Valkey connected, that the API answers only with a
+known `REMOTE-USER`, that only pods allowed by the NetworkPolicy reach the
+API, and that the content app answers.
 
 ### Store Pulp content in S3
 
@@ -335,6 +434,11 @@ with Liquibase before Foreman's migration. Candlepin then refuses to start if
 the schema is not current. `tests/kind/certificates.sh` also creates the two
 Candlepin certificate Secrets, signed by the test CA.
 
+`make test` checks that the Deployment is available, that `/candlepin/status`
+reports mode `NORMAL` over HTTPS verified against the CA bundle for each name
+in the server certificate, that another name is rejected, and that the log
+contains no credentials.
+
 Check Candlepin from your workstation through a port forward, verifying its
 certificate against the test CA:
 
@@ -365,14 +469,25 @@ The Service is `ClusterIP` by default. Set `httpd.service.type=LoadBalancer`,
 and `httpd.service.externalTrafficPolicy=Local` to keep client addresses, to
 expose it outside the cluster. Set `foreman.trustedProxies` to the pod network
 range so Foreman logs the client address that httpd forwards; httpd replaces
-any `X-Forwarded-For` the client sends. With Pulp
-enabled, httpd also routes `/pulp/api/v3`, `/pulp/content` and the other Pulp
-paths, and maps a client certificate whose CN is `foreman.fqdn` to the Pulp
-administrator. Set `pulp.settings.smartProxyPulpUrl` to the in-cluster name of
-the front door, `https://<fullname>-httpd.<namespace>.svc`, because `foreman.fqdn`
-may not resolve inside the cluster; `pulp.settings.contentOrigin` stays
+any `X-Forwarded-For` the client sends. With Pulp enabled, httpd also routes
+`/pulp/api/v3`, `/pulp/content` and the other Pulp paths, and maps a client
+certificate whose CN is `foreman.fqdn` to the Pulp administrator. Set
+`pulp.settings.smartProxyPulpUrl` to the in-cluster name of the front door,
+`https://<fullname>-httpd.<namespace>.svc`, because `foreman.fqdn` may not
+resolve inside the cluster; `pulp.settings.contentOrigin` stays
 `https://<foreman.fqdn>`. `make test` sets both. Candlepin is never exposed;
 Foreman answers `/rhsm` itself.
+
+`make test` checks HTTPS with the server certificate verified for
+`foreman.fqdn` and the in-cluster Service name, the redirect from HTTP to
+HTTPS and the CA download under `/pub` over both protocols. It checks that
+client-supplied `REMOTE-USER` and `SSL-CLIENT-*` headers in any spelling do
+not log anyone in, and that client-supplied `X-Forwarded-*` headers neither
+change the client address Foreman sees nor make plain HTTP count as HTTPS. A
+client certificate from the CA must be accepted and a self-signed one
+rejected, only the httpd pods of the release may connect to the Foreman web
+port, and the Pulp API through httpd must accept the Foreman client
+certificate as the Pulp administrator and refuse clients without it.
 
 ## Enable Katello
 
@@ -400,20 +515,22 @@ with its client certificate. Katello then calls Pulp at
 `pulp.settings.contentOrigin`.
 
 The Katello event daemon runs inside the Foreman web process. The web container
-removes the daemon's PID file before it starts, because a file left by a
-restarted container stops the daemon from starting.
+removes the daemon's process ID (PID) file before it starts, because a file
+left by a restarted container stops the daemon from starting
+([katello#11891](https://github.com/Katello/katello/pull/11891) would fix this
+in Katello).
 
 `make test` checks that `/katello/api/ping` reports Candlepin, Candlepin
 authentication, Foreman Tasks, the event daemon, the Pulp API and the Pulp
 content app as `ok`, and that Pulp is registered as a Smart Proxy. It then
 creates an organization with a product and a yum repository, syncs it,
 checks that the repository metadata and a package are served only with an
-entitlement certificate, publishes a content view, creates an activation key, registers a
-consumer with it, and deletes the organization. A self-signed certificate for
-that consumer, sent as an `X-RHSM-SSL-CLIENT-CERT` header in any `-`/`_`
-spelling by a client without a valid client certificate, must not
-authenticate as the consumer. The repository is a copy of the Pulp project's small
-`rpm-unsigned` fixture. `tests/kind/rpm-repository.sh` downloads it on the
+entitlement certificate, publishes a content view, creates an activation key,
+registers a consumer with it, and deletes the organization. A self-signed
+certificate for that consumer, sent as an `X-RHSM-SSL-CLIENT-CERT` header in
+any `-`/`_` spelling by a client without a valid client certificate, must not
+authenticate as the consumer. The repository is a copy of the Pulp project's
+small `rpm-unsigned` fixture. `tests/kind/rpm-repository.sh` downloads it on the
 machine that runs the tests and serves it inside the cluster at
 `http://rpm-repository/`, so the cluster needs no outbound access for it.
 
@@ -432,7 +549,7 @@ chart has the settings a capsule needs:
   source. httpd keeps exactly these two headers, and only the last
   `X-Forwarded-Host` value, when the request carries a certificate that it
   verified against the CA and whose CN is in the list. From every other
-  client it removes both, in every spelling, as before. A listed capsule can
+  client it removes both, in every spelling. A listed capsule can
   act as any host, so list only capsules you run.
 - `foreman.oauth.existingSecret`: a Secret with `OAUTH_CONSUMER_KEY` and
   `OAUTH_CONSUMER_SECRET` (key names configurable). An init container of the
@@ -473,19 +590,9 @@ that the Pulp Smart Proxy can be registered under
 
 ## Replicas and disruptions
 
-Workloads without local state can run several replicas. The others always run
-one, so a node failure or drain interrupts them until Kubernetes starts a
-replacement pod.
-
-| Component | Replicas | When its node is drained or lost |
-| --- | --- | --- |
-| Foreman web | `replicaCount` | The other replicas keep serving. Sessions are stored in the database |
-| httpd | `httpd.replicas` | The other replicas keep serving |
-| Dynflow workers | `dynflow.worker.replicas`, `dynflow.hostsQueue.replicas` | The other replicas keep running tasks. Sidekiq waits up to 25 seconds for running jobs |
-| Dynflow orchestrator | always 1 | No new task starts until the replacement is ready |
-| Candlepin | always 1 | Candlepin is limited to a single replica because of its embedded messaging broker. Requests that need it wait or fail until the replacement is ready, about 30 to 50 seconds in Kind |
-| Smart Proxy | always 1 | It keeps running jobs in memory. No job runs until the replacement is ready |
-| Pulp api, content, worker | `pulp.api.replicas`, `pulp.content.replicas`, `pulp.worker.replicas` | With ReadWriteOnce storage all Pulp pods run on one node. Content and the Pulp API are unavailable until a pod can mount the volume again; with storage that is local to the node, until the node is back |
+[Component limits](component-limits.md) lists which workloads can run more
+than one replica and what happens when the node of a single-replica workload
+is drained or lost.
 
 For every workload with more than one replica the chart adds a
 PodDisruptionBudget (PDB) that lets `kubectl drain` and other voluntary
@@ -500,11 +607,7 @@ and httpd pods wait 10 seconds after they are asked to stop, so that no new
 request reaches them, and then finish the running requests. A web pod is
 ready when it serves the login page. The API ping is not used for this,
 because with Katello it waits for Candlepin and Pulp, so their restart would
-remove every web pod from the Service. Each web process keeps 4 database
-connections more than it has Puma threads, as foremanctl does, for threads
-such as the Katello event daemon. With Katello, every web pod runs its own
-event daemon; whether several daemons handle an event twice has not been
-tested.
+remove every web pod from the Service.
 
 Every pod of the chart, including the hook Jobs, their init containers and the
 `helm test` pod, meets the `restricted`
@@ -531,7 +634,8 @@ Katello the pod also requests `/api/v2/ping`, which must succeed too. With
 Katello it requests the Pulp status instead, and then deletes the Candlepin
 pod while a second pod requests `/api/v2/ping` and `/rhsm/status`. The Pulp and
 Candlepin results are written to `artifacts/disruption-report.json`, not
-asserted.
+asserted. The test does not run more than one replica of the Dynflow hosts
+queue worker or of Pulp.
 
 ## Smart Proxy with content
 
@@ -617,8 +721,9 @@ assigned, refreshes their features and waits until Foreman lists Registration,
 Templates, Dynflow and Logs (plus the optional modules below), and Pulpcore.
 Then it adds the lifecycle environments named in
 `registration.lifecycleEnvironments` to `<name>-pulp` in each of its
-organizations, and sets `registration.downloadPolicy` when it is not empty. Organizations created later need another `helm upgrade` or an
-assignment in Foreman.
+organizations, and sets `registration.downloadPolicy` when it is not empty.
+Organizations created later need another `helm upgrade` or an assignment in
+Foreman.
 
 ### Content and hosts
 
@@ -730,7 +835,7 @@ upgrade, pin each image by digest. Every image value (`image`, `pulp.image`,
 `digest`, which takes precedence over `tag`, for example
 `--set-string image.digest=sha256:6e3772a9...`. The chart rejects a digest
 that is not `sha256:` followed by 64 hex digits. The Foreman image digest
-applies to the web, Dynflow, migration and Katello Job pods together.
+applies to the web, Dynflow, migration and registration Job pods together.
 
 Upgrade with the same command and values as the installation, changing only
 the digests:
@@ -789,12 +894,13 @@ and runs the tests in `tests/upgrade`. They upgrade to the image that the
 registry after a while, release tags stay. After a new release, set
 `UPGRADE_FROM_IMAGE_DIGEST` in the `Makefile` to the digest of its tag, for
 example with
-`skopeo inspect --format '{{.Digest}}' docker://quay.io/foreman/foreman:5.0.1`. For the Candlepin, Foreman and Pulp migration
-in turn, they change the database password in the Secret that the Job reads.
-Running pods keep the credentials they started with, so only the new Job
-fails. They check that `helm upgrade` to the new image fails on
-that Job, that no Deployment, ReplicaSet or pod changes, and that the Foreman
-and Katello pings succeed during and after the attempt. Then they restore the
+`skopeo inspect --format '{{.Digest}}' docker://quay.io/foreman/foreman:5.0.1`.
+For the Candlepin, Foreman and Pulp migration in turn, they change the
+database password in the Secret that the Job reads. Running pods keep the
+credentials they started with, so only the new Job fails. They check that
+`helm upgrade` to the new image fails on that Job, that no Deployment,
+ReplicaSet or pod changes, and that the Foreman and Katello pings succeed
+during and after the attempt. Then they restore the
 Secret and upgrade again, which must succeed, finish every migration Job
 before the first new ReplicaSet is created and keep data created before the
 upgrade. Then they change `foreman.externalUrl` only, which Foreman reads
@@ -818,7 +924,7 @@ A backup is a directory `foreman-backup-<UTC time>` with:
 
 | File | Contents | Needed to restore |
 | --- | --- | --- |
-| `foreman.dump`, `candlepin.dump`, `pulp.dump` | `pg_dump` custom format dumps of the three databases | Yes |
+| `foreman.dump`, `candlepin.dump`, `pulp.dump` | `pg_dump` custom format dumps of the databases; Candlepin and Pulp only when enabled | Yes |
 | `pulp-content.tar.gz` | The `media` directory of the Pulp volume: artifacts and published files. Not created with S3 storage | Yes, unless content is synced again |
 | `secrets/*.json` | Every Secret the release's workloads read | See below |
 | `values.yaml` | The user-supplied chart values | Yes |
@@ -844,7 +950,8 @@ because a claim in the release namespace is deleted with it, and a
 `local-path` volume is lost with its node. Copy the directory to separate
 storage. Everything passes through the Kubernetes API with `kubectl exec` and
 `kubectl cp`, which is slow for large Pulp volumes. The scripts have no option
-to skip the content.
+to skip the content. They do not back up a `foreman-proxy` release, and
+`make test-backup` tests only the configuration that `make test` installs.
 
 ### Back up
 
@@ -855,11 +962,11 @@ tools/backup.sh --namespace foreman --release foreman /srv/backups
 The script refuses to start while Foreman or Pulp tasks are running. It scales
 every Deployment of the release to zero, dumps the databases, archives the Pulp
 content and scales the Deployments back, so Foreman is unavailable for the
-duration. With `--online` it leaves the release running. The three dumps and the
+duration. With `--online` it leaves the release running. The dumps and the
 content are then copied one after another while the application can change
-them. `--image` selects the helper image, default `postgres:16-alpine`
-pinned by digest; its PostgreSQL major version must match the database server. Valkey is not backed
-up: it holds caches and the task queue.
+them. `--image` selects the helper image, default `postgres:16-alpine` pinned
+by digest; its PostgreSQL major version must match the database server. Valkey
+is not backed up: it holds caches and the task queue.
 
 ### Restore
 

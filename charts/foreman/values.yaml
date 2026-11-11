@@ -25,8 +25,8 @@ topologySpread:
 
 # Every image value below takes repository, tag and digest. A digest
 # (sha256:...) takes precedence over the tag; pin digests for reproducible
-# installs and upgrades. The Foreman image is used by the web, Dynflow and
-# migration pods.
+# installs and upgrades. The Foreman image is used by the web, Dynflow,
+# migration and registration Job pods.
 image:
   repository: quay.io/foreman/foreman
   tag: nightly

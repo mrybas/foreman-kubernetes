@@ -1,13 +1,22 @@
-Foreman is available inside the cluster at:
-
-  http://{{ include "foreman.fullname" . }}:{{ .Values.service.port }}
-
-{{ if .Values.httpd.enabled -}}
+Foreman answers only requests for {{ .Values.foreman.fqdn }}; other host names get HTTP 403.
+{{ if .Values.httpd.enabled }}
 The HTTPS front door is the Service {{ include "httpd.fullname" . }} (ports 80 and 443)
 for https://{{ .Values.foreman.fqdn }}. The server CA is published at
-https://{{ .Values.foreman.fqdn }}/pub/katello-server-ca.crt.
+https://{{ .Values.foreman.fqdn }}/pub/katello-server-ca.crt. To try it from
+your workstation, trusting the CA bundle in ca.crt:
+
+  kubectl --namespace {{ .Release.Namespace }} port-forward service/{{ include "httpd.fullname" . }} 8443:443
+  curl --cacert ca.crt --resolve {{ .Values.foreman.fqdn }}:8443:127.0.0.1 https://{{ .Values.foreman.fqdn }}:8443/api/v2/ping
+
+{{ else }}
+It serves plain HTTP on the Service {{ include "foreman.fullname" . }}, port {{ .Values.service.port }}.
+Resolve {{ .Values.foreman.fqdn }} to that Service, or send the name as the Host header:
+
+  kubectl --namespace {{ .Release.Namespace }} port-forward service/{{ include "foreman.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  curl -H 'Host: {{ .Values.foreman.fqdn }}' http://localhost:{{ .Values.service.port }}/api/v2/ping
 
 {{ end -}}
+
 Run the chart smoke test with:
 
   helm test {{ .Release.Name }} --namespace {{ .Release.Namespace }} --logs

@@ -45,15 +45,18 @@ This runs `helm lint` on each chart in the repository. CI's **Chart Lint** job
 runs the same `make lint` command.
 
 Run `make setup-test-env` and `make test-static` to check the rendered
-`foreman` and `foreman-proxy` Helm charts with pytest, without a cluster. CI's **Chart Static Tests**
-job runs the same targets.
+`foreman` and `foreman-proxy` Helm charts with pytest, without a cluster.
+CI's **Chart Static Tests** job runs the same targets.
 
-The first runnable milestone installs core Foreman with a disposable PostgreSQL
-database. Integration tests require a native Linux AMD64 host, Podman, Kind,
-kubectl, Helm 4, and Python 3.10 or newer. See the
-[minimal Foreman quick start](docs/quick-start.md) for setup, test, and cleanup
-commands. CI's **Foreman Installation** job uses those same Makefile targets and
-publishes pytest results as JUnit XML.
+Integration tests install the `foreman` Helm chart with the Katello plugin,
+Candlepin, Pulp and a Smart Proxy, and a `foreman-proxy` release, against a
+disposable PostgreSQL database in a Kind cluster. They require a native Linux
+AMD64 host, Podman, Kind, kubectl, Helm 4, and Python 3.10 or newer. See the
+[quick start](docs/quick-start.md) for setup, test, and cleanup commands, and
+[component limits](docs/component-limits.md) for replica counts and known
+limits. CI's **Foreman Installation**, **Foreman Upgrade** and **Foreman
+Disruption** jobs use those same Makefile targets and publish pytest results as
+JUnit XML.
 
 ## Status and collaboration
 
