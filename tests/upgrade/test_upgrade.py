@@ -9,12 +9,12 @@ nightly) points to when the tests start, read from the registry. The tests then:
    database password in the existing Secret that the Job reads. Running pods
    keep the credentials they started with, so only the new Job is affected.
    `helm upgrade` to the target image must fail on that Job, no
-   Deployment may change, and the running pods must keep answering the
+   Deployment or CronJob may change, and the running pods must keep answering the
    Foreman ping (and the Katello ping when Katello is enabled) during and
    after the attempt. The Secret is restored afterwards.
 2. Run the same upgrade again. It must succeed, every migration Job must
    complete before the first new ReplicaSet is created, and the Foreman pods
-   must run the new image.
+   and the cron CronJobs must run the new image.
 3. Upgrade with only a Foreman setting changed (foreman.externalUrl, rendered
    into settings.yaml). The Foreman web and Dynflow pods must be replaced and
    use the new setting; every other pod must stay. A second upgrade restores
@@ -175,13 +175,19 @@ def foreman_image(computed, digest):
 
 
 def snapshot():
-    """Deployments, ReplicaSets and running pods of the release."""
+    """Deployments, CronJobs, ReplicaSets and running pods of the release."""
     selector = f"app.kubernetes.io/instance={RELEASE}"
     deployments = {
         item["metadata"]["name"]: (
             item["metadata"]["generation"],
             [container["image"] for container in item["spec"]["template"]["spec"]["containers"]])
         for item in kubectl("get", "deployments", "--selector", selector)["items"]}
+    cron_jobs = {
+        item["metadata"]["name"]: (
+            item["metadata"]["generation"],
+            [container["image"] for container
+             in item["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"]])
+        for item in kubectl("get", "cronjobs", "--selector", selector)["items"]}
     replica_sets = {item["metadata"]["name"]: item["metadata"]["creationTimestamp"]
                     for item in kubectl("get", "replicasets", "--selector", selector)["items"]}
     pods = {
@@ -190,7 +196,8 @@ def snapshot():
             sum(status["restartCount"] for status in item["status"].get("containerStatuses", [])))
         for item in kubectl("get", "pods", "--selector", selector)["items"]
         if any(owner["kind"] == "ReplicaSet" for owner in item["metadata"].get("ownerReferences", []))}
-    return {"deployments": deployments, "replicaSets": replica_sets, "pods": pods}
+    return {"deployments": deployments, "cronJobs": cron_jobs, "replicaSets": replica_sets,
+            "pods": pods}
 
 
 class Pinger(threading.Thread):
@@ -358,7 +365,7 @@ def test_failed_migration_keeps_the_running_release(component, computed, values_
     conditions = kubectl("get", "job", job)["status"].get("conditions", [])
     assert any(c["type"] == "Failed" and c["status"] == "True" for c in conditions), conditions
 
-    assert snapshot() == before, "the failed upgrade changed Deployments or pods"
+    assert snapshot() == before, "the failed upgrade changed Deployments, CronJobs or pods"
     failures = [entry for entry in pinger.results if not entry[1]]
     assert not failures, failures
     for name in checks:
@@ -399,6 +406,9 @@ def test_upgrade_rolls_forward_after_the_fix(computed, values_file):
         name = f"{RELEASE}-{name}"
         if name in after["deployments"]:
             assert after["deployments"][name][1] == [expected], name
+    # The cron runs use the new image only after the migrations.
+    for name, (_, images) in after["cronJobs"].items():
+        assert images == [expected], name
 
     enabled = sorted(name for name, entry in MIGRATIONS.items() if entry(computed)[0])
     completed = migration_completions(revision["revision"])

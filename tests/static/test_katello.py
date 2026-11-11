@@ -34,8 +34,8 @@ def enabled(render):
 
 
 def foreman_workloads(manifests):
-    """Workloads that run the Foreman image with Rails: web, Dynflow, Jobs."""
-    return [doc for doc in manifests.of_kind("Deployment", "Job")
+    """Workloads that run the Foreman image with Rails: web, Dynflow, Jobs, CronJobs."""
+    return [doc for doc in manifests.of_kind("Deployment", "Job", "CronJob")
             if pod_spec(doc)["containers"][0]["image"].startswith("quay.io/foreman/foreman:")]
 
 
@@ -95,6 +95,7 @@ def test_every_foreman_pod_loads_katello(enabled):
     assert set(workloads) == {
         FULLNAME, f"{FULLNAME}-migrate-1", JOB,
         *(f"{FULLNAME}-dynflow-{name}" for name in ("orchestrator", "worker", "worker-hosts-queue")),
+        *(f"{FULLNAME}-cron-{period}" for period in ("hourly", "daily", "weekly", "monthly")),
     }
     for name, workload in workloads.items():
         pod = pod_spec(workload)

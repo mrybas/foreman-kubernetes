@@ -26,7 +26,7 @@ topologySpread:
 # Every image value below takes repository, tag and digest. A digest
 # (sha256:...) takes precedence over the tag; pin digests for reproducible
 # installs and upgrades. The Foreman image is used by the web, Dynflow,
-# migration and registration Job pods.
+# migration, registration Job and cron Job pods.
 image:
   repository: quay.io/foreman/foreman
   tag: nightly
@@ -72,8 +72,8 @@ foreman:
     existingSecret: ""
     consumerKeySecretKey: OAUTH_CONSUMER_KEY
     consumerSecretSecretKey: OAUTH_CONSUMER_SECRET
-  # Extra /etc/hosts entries for the Foreman web and Dynflow pods and the
-  # registration Jobs, in the pod hostAliases format
+  # Extra /etc/hosts entries for the Foreman web and Dynflow pods, the
+  # registration Jobs and the cron Jobs, in the pod hostAliases format
   # ([{ip: 192.0.2.10, hostnames: [capsule.example.test]}]). Foreman connects
   # to every Smart Proxy by the host name of its URL, including the Pulp URL a
   # Smart Proxy with content advertises. Use this when those names are not in
@@ -88,7 +88,8 @@ certificates:
   # When true, the Foreman web pods mount the CA bundle and the client
   # certificate, and settings.yaml points ssl_ca_file, ssl_certificate and
   # ssl_priv_key at them. Foreman uses these for HTTPS connections to Smart
-  # Proxies. The migration Job mounts neither.
+  # Proxies. The Dynflow and cron pods mount them too. The migration Job
+  # mounts neither.
   enabled: false
   ca:
     # Secret holding the CA bundle Foreman trusts for outgoing HTTPS. Default
@@ -356,6 +357,59 @@ proxy:
 migration:
   backoffLimit: 2
   activeDeadlineSeconds: 1200
+
+# Foreman's periodic maintenance tasks, as one CronJob per period that runs
+# `foreman-rake cron:<period>` with the Foreman image. The image lists the
+# tasks of each period; plugins add their own:
+#   hourly: ldap:refresh_usergroups
+#   daily: reports:daily, db:sessions:clear, reports:expire, audits:expire,
+#     foreman_tasks:cleanup (with Dynflow)
+#   weekly: reports:weekly, notifications:clean,
+#     katello:delete_orphaned_content, katello:refresh_alternate_content_sources
+#     (with Katello)
+#   monthly: reports:monthly
+# The default schedules are those of /etc/cron.d/foreman in the image, which
+# no process runs in a container. foremanctl runs the same commands from
+# systemd timers at the start of each period with up to 2 minutes of random
+# delay. Each run first checks that the database has no pending migrations
+# and fails if it has. The pods use the configuration, certificates and host
+# aliases of the web pods.
+cron:
+  enabled: true
+  periods:
+    hourly:
+      enabled: true
+      schedule: "30 * * * *"
+    daily:
+      enabled: true
+      schedule: "0 2 * * *"
+    weekly:
+      enabled: true
+      schedule: "0 5 * * 0"
+    monthly:
+      enabled: true
+      schedule: "0 3 1 * *"
+  # IANA time zone of the schedules, for example Europe/Prague. Empty uses
+  # the time zone of the kube-controller-manager, usually UTC.
+  timeZone: ""
+  # Forbid: a run does not start while the previous run of the same period
+  # is still active.
+  concurrencyPolicy: Forbid
+  # A run missed by more than this many seconds, for example while the
+  # CronJob was suspended, is skipped until the next scheduled time.
+  startingDeadlineSeconds: 1800
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  # A failed run is not retried; the next scheduled run tries again.
+  backoffLimit: 0
+  # foremanctl stops a run after 30 minutes.
+  activeDeadlineSeconds: 1800
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
 
 service:
   type: ClusterIP

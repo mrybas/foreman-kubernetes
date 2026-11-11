@@ -12,67 +12,18 @@ metadata:
 spec:
   backoffLimit: {{ .Values.migration.backoffLimit }}
   activeDeadlineSeconds: {{ .Values.migration.activeDeadlineSeconds }}
+  {{- $secret := .Values.foreman.existingSecret }}
+  {{- $env := list
+    (dict "name" "SEED_ADMIN_USER" "valueFrom" (dict "secretKeyRef" (dict "name" $secret "key" .Values.foreman.seedAdminUserSecretKey)))
+    (dict "name" "SEED_ADMIN_PASSWORD" "valueFrom" (dict "secretKeyRef" (dict "name" $secret "key" .Values.foreman.seedAdminPasswordSecretKey)))
+  }}
   template:
-    metadata:
-      labels:
-        {{- include "foreman.selectorLabels" . | nindent 8 }}
-        app.kubernetes.io/component: migration
-    spec:
-      restartPolicy: OnFailure
-      securityContext:
-        fsGroup: 994
-        fsGroupChangePolicy: OnRootMismatch
-        runAsGroup: 994
-        runAsNonRoot: true
-        runAsUser: 994
-        seccompProfile:
-          type: RuntimeDefault
-      {{- with .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- if .Values.katello.enabled }}
-      initContainers:
-        {{- include "katello.initContainer" . | nindent 8 }}
-      {{- end }}
-      containers:
-        - name: migrate
-          image: {{ include "foreman.image" . }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command:
-            - /bin/bash
-            - -ec
-            - bin/rails db:migrate && bin/rails db:seed
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-                - ALL
-            runAsNonRoot: true
-            runAsGroup: 994
-            runAsUser: 994
-          env:
-            {{- include "foreman.env" . | nindent 12 }}
-            - name: SEED_ADMIN_USER
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.foreman.existingSecret }}
-                  key: {{ .Values.foreman.seedAdminUserSecretKey }}
-            - name: SEED_ADMIN_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.foreman.existingSecret }}
-                  key: {{ .Values.foreman.seedAdminPasswordSecretKey }}
-          volumeMounts:
-            {{- include "foreman.migrationVolumeMounts" . | nindent 12 }}
-          resources:
-            {{- toYaml .Values.resources | nindent 12 }}
-      volumes:
-        - name: configuration
-          configMap:
-            name: {{ include "foreman.migrationConfigName" . }}
-        - name: temporary
-          emptyDir: {}
-        {{- if .Values.katello.enabled }}
-        {{- include "katello.volume" . | nindent 8 }}
-        {{- end }}
+    {{- include "foreman.jobPodTemplate" (dict
+      "context" .
+      "component" "migration"
+      "container" "migrate"
+      "command" (list "/bin/bash" "-ec" "bin/rails db:migrate && bin/rails db:seed")
+      "env" $env
+      "web" false
+      "restartPolicy" "OnFailure"
+      "resources" .Values.resources) | nindent 4 }}

@@ -22,17 +22,18 @@
 #                         databases and the content are then not taken at the
 #                         same instant
 #
-# Without --online the script scales every Deployment of the release to zero,
-# takes the copies and scales them back. It refuses to start while Foreman or
-# Pulp tasks of the release are running. The backup contains secrets: keep it
-# private.
+# Without --online the script suspends the CronJobs of the release, scales
+# every Deployment to zero, waits for running cron Jobs to finish, takes the
+# copies, then scales the Deployments back and resumes the CronJobs. It
+# refuses to start while Foreman or Pulp tasks are running. The backup
+# contains secrets: keep it private.
 set -euo pipefail
 
 # shellcheck source=tools/backup-common.sh
 . "$(dirname "${BASH_SOURCE[0]}")/backup-common.sh"
 
 usage() {
-  sed -n '5,28p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '5,29p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -122,6 +123,7 @@ chart=$(hm list --filter "^${release}\$" --output json |
 
 helper_start "${values}" "${claim}" true
 replicas=()
+suspended=()
 cleanup() {
   local status=$? entry
   helper_stop
@@ -132,6 +134,13 @@ cleanup() {
     done
     for entry in "${replicas[@]}"; do
       kc rollout status deployment "${entry%% *}" --timeout=20m >/dev/null || status=1
+    done
+  fi
+  if [[ ${#suspended[@]} -gt 0 ]]; then
+    log "Resuming ${#suspended[@]} CronJobs: ${suspended[*]}"
+    for entry in "${suspended[@]}"; do
+      kc patch cronjob "${entry}" --type merge --patch '{"spec":{"suspend":false}}' >/dev/null ||
+        status=1
     done
   fi
   if [[ ${status} -ne 0 ]]; then
@@ -156,6 +165,18 @@ if [[ "${pulp_enabled}" == true ]]; then
 fi
 
 if [[ "${online}" != true ]]; then
+  # Cron tasks write to the database. CronJobs that were already suspended
+  # stay suspended afterwards.
+  while IFS= read -r entry; do
+    suspended+=("${entry}")
+  done < <(kc get cronjobs --selector "app.kubernetes.io/instance=${release}" --output json |
+    jq -r '.items[] | select(.spec.suspend != true) | .metadata.name')
+  if [[ ${#suspended[@]} -gt 0 ]]; then
+    log "Suspending ${#suspended[@]} CronJobs: ${suspended[*]}"
+    for entry in "${suspended[@]}"; do
+      kc patch cronjob "${entry}" --type merge --patch '{"spec":{"suspend":true}}' >/dev/null
+    done
+  fi
   while IFS= read -r entry; do
     replicas+=("${entry}")
   done < <(kc get deployments --selector "app.kubernetes.io/instance=${release}" --output json |
@@ -164,6 +185,8 @@ if [[ "${online}" != true ]]; then
   for entry in "${replicas[@]}"; do
     kc scale deployment "${entry%% *}" --replicas 0 >/dev/null
   done
+  # Running cron Job pods carry the release label too, so this also waits
+  # for a cron run that started before the CronJobs were suspended.
   deadline=$((SECONDS + 600))
   until [[ "$(kc get pods --selector "app.kubernetes.io/instance=${release}" --output json |
     jq '[.items[] | select(.status.phase == "Running" or .status.phase == "Pending")] | length')" == 0 ]]; do

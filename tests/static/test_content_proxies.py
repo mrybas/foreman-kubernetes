@@ -129,11 +129,13 @@ def test_oauth_without_katello(render):
 
 def test_host_aliases_reach_every_pod_that_calls_smart_proxies(render):
     manifests = render(values(foreman={"hostAliases": ALIASES}))
-    with_aliases = {doc["metadata"]["name"] for doc in manifests.of_kind("Deployment", "Job", "Pod")
+    with_aliases = {doc["metadata"]["name"]
+                    for doc in manifests.of_kind("Deployment", "Job", "CronJob", "Pod")
                     if pod_spec(doc).get("hostAliases") == ALIASES}
     assert with_aliases == {
         FULLNAME, f"{FULLNAME}-pulp-smart-proxy-1", f"{FULLNAME}-proxy-register-1",
         *(f"{FULLNAME}-dynflow-{name}" for name in ("orchestrator", "worker", "worker-hosts-queue")),
+        *(f"{FULLNAME}-cron-{period}" for period in ("hourly", "daily", "weekly", "monthly")),
     }
 
 

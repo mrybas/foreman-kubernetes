@@ -181,11 +181,37 @@ def test_create_content_and_host(kube_cluster, state, tmp_path_factory):
                      proxies=sorted(p["name"] for p in api.get("/api/v2/smart_proxies")["results"]))
 
 
+def cronjobs(env, namespace):
+    """CronJob name -> spec.suspend, for the CronJobs of the release."""
+    items = json.loads(kubectl(env, namespace, "get", "cronjobs", "--selector",
+                               f"app.kubernetes.io/instance={RELEASE}", "--output",
+                               "json").stdout)["items"]
+    return {item["metadata"]["name"]: bool(item["spec"].get("suspend")) for item in items}
+
+
+def suspend(env, namespace, name, value):
+    kubectl(env, namespace, "patch", "cronjob", name, "--type", "merge", "--patch",
+            json.dumps({"spec": {"suspend": value}}))
+
+
 def test_backup(env, state, tmp_path_factory):
     step(state, "rpm")
     destination = tmp_path_factory.mktemp("backups")
-    result = run(env, TOOLS / "backup.sh", "--namespace", SOURCE_NAMESPACE, "--release", RELEASE,
-                 destination)
+    # The script suspends the CronJobs it found active and resumes only those.
+    before = cronjobs(env, SOURCE_NAMESPACE)
+    assert len(before) == 4 and not any(before.values()), before
+    already = sorted(before)[0]
+    suspend(env, SOURCE_NAMESPACE, already, True)
+    try:
+        result = run(env, TOOLS / "backup.sh", "--namespace", SOURCE_NAMESPACE, "--release",
+                     RELEASE, destination)
+        after = cronjobs(env, SOURCE_NAMESPACE)
+    finally:
+        suspend(env, SOURCE_NAMESPACE, already, False)
+    assert after == {name: name == already for name in before}, after
+    active = " ".join(sorted(set(before) - {already}))
+    assert f"Suspending 3 CronJobs: {active}" in result.stderr, result.stderr
+    assert f"Resuming 3 CronJobs: {active}" in result.stderr, result.stderr
     backup = Path(result.stdout.strip().splitlines()[-1])
     metadata = json.loads((backup / "metadata.json").read_text())
     assert metadata["databases"] == ["foreman", "candlepin", "pulp"]
@@ -292,6 +318,11 @@ def test_restored_host_and_consumer(restored, state):
     status, _, body = restored.get(f"/rhsm/consumers/{consumer['uuid']}", context)
     assert status == 200, body[:1000]
     assert json.loads(body)["uuid"] == consumer["uuid"]
+
+
+def test_restored_cronjobs_are_scheduled(env, restored):
+    found = cronjobs(env, TARGET_NAMESPACE)
+    assert len(found) == 4 and not any(found.values()), found
 
 
 def test_restored_smart_proxies_point_at_the_new_namespace(restored, state):

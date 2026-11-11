@@ -8,9 +8,11 @@ SECRET_ENV = {
 
 
 def pod_spec(manifest):
-    """Return the pod spec of a Pod, Deployment or Job."""
+    """Return the pod spec of a Pod, Deployment, Job or CronJob."""
     if manifest["kind"] == "Pod":
         return manifest["spec"]
+    if manifest["kind"] == "CronJob":
+        return manifest["spec"]["jobTemplate"]["spec"]["template"]["spec"]
     return manifest["spec"]["template"]["spec"]
 
 
@@ -20,7 +22,7 @@ def containers(manifest):
 
 
 def test_containers_use_restricted_security_context(manifests):
-    workloads = manifests.of_kind("Deployment", "Job", "Pod")
+    workloads = manifests.of_kind("Deployment", "Job", "CronJob", "Pod")
     assert workloads
     for workload in workloads:
         pod = pod_spec(workload).get("securityContext", {})
@@ -35,7 +37,7 @@ def test_containers_use_restricted_security_context(manifests):
 
 
 def test_workload_containers_request_cpu_and_memory(manifests):
-    for workload in manifests.of_kind("Deployment", "Job"):
+    for workload in manifests.of_kind("Deployment", "Job", "CronJob"):
         for container in containers(workload):
             requests = container.get("resources", {}).get("requests", {})
             assert {"cpu", "memory"} <= requests.keys(), container["name"]
@@ -80,7 +82,7 @@ def test_migration_job_runs_before_deployment(manifests):
 def test_secrets_come_from_existing_secret(render):
     manifests = render({"foreman": {"existingSecret": "custom-runtime"}})
     found = set()
-    for workload in manifests.of_kind("Deployment", "Job"):
+    for workload in manifests.of_kind("Deployment", "Job", "CronJob"):
         for container in containers(workload):
             for env in container.get("env", []):
                 if env["name"] in SECRET_ENV:
@@ -102,7 +104,7 @@ def test_no_secret_material_is_rendered(manifests):
 
 def test_image_is_repository_and_tag(render):
     manifests = render({"image": {"repository": "registry.example.test/foreman", "tag": "3.99"}})
-    for workload in manifests.of_kind("Deployment", "Job"):
+    for workload in manifests.of_kind("Deployment", "Job", "CronJob"):
         for container in containers(workload):
             assert container["image"] == "registry.example.test/foreman:3.99"
 

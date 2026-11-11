@@ -36,7 +36,7 @@ def values(path=None, **image):
 def workload_images(manifests):
     """(workload name, container name, image) of every container."""
     return [(workload["metadata"]["name"], container["name"], container["image"])
-            for workload in manifests.of_kind("Deployment", "Job", "Pod")
+            for workload in manifests.of_kind("Deployment", "Job", "CronJob", "Pod")
             for container in containers(workload)]
 
 

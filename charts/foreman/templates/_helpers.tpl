@@ -302,6 +302,92 @@ Every Foreman pod shares the cache, so Dynflow and web see the same values.
 {{- end }}
 {{- end }}
 
+{{/*
+Pod template of a Job that runs one command with the Foreman image: the
+migration Job and the cron CronJobs. Takes a dict:
+  context        root context
+  component      app.kubernetes.io/component label of the pod
+  container      container name
+  command        command, a list
+  env            extra container env entries, a list (optional)
+  web            false: the migration ConfigMap (a hook resource), no client
+                 certificates, no host aliases. true: the ConfigMap of the
+                 web and Dynflow pods with their certificates and host
+                 aliases, for Jobs that run outside a Helm hook.
+  restartPolicy  pod restartPolicy
+  resources      container resources
+*/}}
+{{- define "foreman.jobPodTemplate" -}}
+{{- $context := .context -}}
+metadata:
+  labels:
+    {{- include "foreman.selectorLabels" $context | nindent 4 }}
+    app.kubernetes.io/component: {{ .component }}
+spec:
+  restartPolicy: {{ .restartPolicy }}
+  securityContext:
+    fsGroup: 994
+    fsGroupChangePolicy: OnRootMismatch
+    runAsGroup: 994
+    runAsNonRoot: true
+    runAsUser: 994
+    seccompProfile:
+      type: RuntimeDefault
+  {{- with $context.Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- if .web }}
+  {{- with $context.Values.foreman.hostAliases }}
+  hostAliases:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- end }}
+  {{- if $context.Values.katello.enabled }}
+  initContainers:
+    {{- include "katello.initContainer" $context | nindent 4 }}
+  {{- end }}
+  containers:
+    - name: {{ .container }}
+      image: {{ include "foreman.image" $context }}
+      imagePullPolicy: {{ $context.Values.image.pullPolicy }}
+      command:
+        {{- toYaml .command | nindent 8 }}
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        runAsNonRoot: true
+        runAsGroup: 994
+        runAsUser: 994
+      env:
+        {{- include "foreman.env" $context | nindent 8 }}
+        {{- with .env }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      volumeMounts:
+        {{- if .web }}
+        {{- include "foreman.volumeMounts" $context | nindent 8 }}
+        {{- else }}
+        {{- include "foreman.migrationVolumeMounts" $context | nindent 8 }}
+        {{- end }}
+      resources:
+        {{- toYaml .resources | nindent 8 }}
+  volumes:
+    - name: configuration
+      configMap:
+        name: {{ .web | ternary (include "foreman.configName" $context) (include "foreman.migrationConfigName" $context) }}
+    - name: temporary
+      emptyDir: {}
+    {{- if and .web $context.Values.certificates.enabled }}
+    {{- include "foreman.certificatesVolume" $context | nindent 4 }}
+    {{- end }}
+    {{- if $context.Values.katello.enabled }}
+    {{- include "katello.volume" $context | nindent 4 }}
+    {{- end }}
+{{- end }}
+
 {{- define "pulp.fullname" -}}
 {{- printf "%s-pulp" (include "foreman.fullname" .) | trunc 52 | trimSuffix "-" }}
 {{- end }}

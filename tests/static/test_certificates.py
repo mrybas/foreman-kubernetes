@@ -40,7 +40,7 @@ def mounted_paths(manifest):
 
 
 def test_certificates_are_disabled_by_default(manifests):
-    for workload in manifests.of_kind("Deployment", "Job", "Pod"):
+    for workload in manifests.of_kind("Deployment", "Job", "CronJob", "Pod"):
         assert volume(workload, "certificates") is None, workload["metadata"]["name"]
         for container in containers(workload):
             paths = [m["mountPath"] for m in container.get("volumeMounts", [])]

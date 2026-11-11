@@ -237,6 +237,49 @@ recurring tasks. Kubernetes restarts it and it then runs normally.
 `ok`, and that a scheduled report runs as a task that ends in state `stopped`
 with result `success`.
 
+## Run periodic tasks
+
+Foreman has maintenance tasks that must run on a schedule, such as expiring
+old reports and audits, clearing old sessions and removing expired
+notifications. The image lists them in `foreman-rake cron:hourly`,
+`cron:daily`, `cron:weekly` and `cron:monthly`, and plugins add their own, for
+example Katello's weekly orphaned content cleanup. The image also has a
+`/etc/cron.d/foreman` file, but no cron daemon runs in the container.
+
+The chart adds one CronJob per period, `<release>-foreman-cron-<period>`, on
+by default (`cron.enabled`). The schedules are those of the image's cron file,
+in the time zone of the cluster unless `cron.timeZone` is set:
+
+| Period | `cron.periods.<period>.schedule` |
+| --- | --- |
+| hourly | `30 * * * *` |
+| daily | `0 2 * * *` |
+| weekly | `0 5 * * 0` |
+| monthly | `0 3 1 * *` |
+
+`foremanctl` runs the same commands from systemd timers at the start of each
+period. Each period can be turned off with `cron.periods.<period>.enabled`.
+A run does not start while the previous run of the same period is still
+active, is not retried when it fails and is stopped after 30 minutes. The pods
+use the image, environment, configuration and certificates of the web pods.
+
+Each run first checks with `db:abort_if_pending_migrations` that every
+database migration of its image is applied, and fails if one is not.
+Helm runs the migration Jobs before it changes the CronJobs, so a run with a
+new image does not start on the old schema. A run with the old image can start
+while a migration is running, as the old web pods keep serving then. The cron
+tasks delete old rows, so the worst case is a failed run that the next one
+repeats. To avoid it, suspend the CronJobs during an upgrade with
+`kubectl patch cronjob <name> --patch '{"spec":{"suspend":true}}'`; a run
+missed by more than `cron.startingDeadlineSeconds` (30 minutes) is skipped
+until its next time.
+
+`make test` starts a run of each CronJob with
+`kubectl create job --from=cronjob/<name>` and checks that it completes and
+that every task of the period finished. It adds an expired and an active
+notification to the database first and checks that the weekly run removed only
+the expired one.
+
 ## Run remote execution jobs
 
 Set `proxy.enabled=true` to add a Smart Proxy (`foreman-proxy`) that runs
@@ -952,7 +995,8 @@ upgrade, pin each image by digest. Every image value (`image`, `pulp.image`,
 `digest`, which takes precedence over `tag`, for example
 `--set-string image.digest=sha256:6e3772a9...`. The chart rejects a digest
 that is not `sha256:` followed by 64 hex digits. The Foreman image digest
-applies to the web, Dynflow, migration and registration Job pods together.
+applies to the web, Dynflow, migration, registration Job and cron Job pods
+together.
 
 Upgrade with the same command and values as the installation, changing only
 the digests:
@@ -964,8 +1008,10 @@ helm upgrade foreman charts/foreman --namespace foreman --values my-values.yaml 
 
 Helm runs the migration Jobs before it changes anything else, one after the
 other: Candlepin, then Foreman, then Pulp. Only when all of them succeed does
-it update the Deployments. With `--wait` it then waits for the new pods to
-be ready, and runs the Jobs that register Pulp and the Smart Proxy in Foreman.
+it update the Deployments and the cron CronJobs. With `--wait` it then waits
+for the new pods to be ready, and runs the Jobs that register Pulp and the
+Smart Proxy in Foreman. A cron run that starts during the migration uses the
+old image, as the running web pods do; see [Run periodic tasks](#run-periodic-tasks).
 
 A change of values that only changes configuration also replaces pods. Every
 workload that reads a chart ConfigMap (Foreman web, the Dynflow Deployments,
@@ -1077,10 +1123,12 @@ to skip the content. `make test-backup` tests only the configuration that
 tools/backup.sh --namespace foreman --release foreman /srv/backups
 ```
 
-The script refuses to start while Foreman or Pulp tasks are running. It scales
-every Deployment of the release to zero, dumps the databases, archives the Pulp
-content and scales the Deployments back, so Foreman is unavailable for the
-duration. With `--online` it leaves the release running. The dumps and the
+The script refuses to start while Foreman or Pulp tasks are running. It
+suspends the cron CronJobs, scales every Deployment of the release to zero,
+waits for a cron run that already started, dumps the databases, archives the
+Pulp content, scales the Deployments back and resumes the CronJobs it
+suspended, so Foreman is unavailable for the duration. A CronJob that was
+already suspended stays suspended. With `--online` it leaves the release running. The dumps and the
 content are then copied one after another while the application can change
 them. `--image` selects the helper image, default `postgres:16-alpine` pinned
 by digest; its PostgreSQL major version must match the database server. Valkey
@@ -1100,7 +1148,9 @@ The script creates the backed-up Secrets that do not exist yet, restores the
 databases with `pg_restore`, creates the Pulp claim and unpacks the content into
 it, then runs `helm install` with the backed-up values. Helm adopts the claim.
 The migration Jobs find current schemas with nothing to migrate, and the Pulp and
-Smart Proxy registration Jobs update the Smart Proxy URLs. Arguments after
+Smart Proxy registration Jobs update the Smart Proxy URLs. Helm creates the
+cron CronJobs after the migration Jobs, so a cron run never sees the empty
+or half-restored databases. Arguments after
 `--` go to `helm install`. Use the chart version that made the backup
 (`--chart`). The script stops if a database already has tables, and
 `--force` replaces them, so after a failed restore run it again with
@@ -1124,8 +1174,9 @@ release up, deletes the `foreman` namespace and restores into
 checks that Katello's ping is `ok`, that the organization, product, repository
 and host exist, that a package downloads through `/pulp/content` with the
 entitlement certificate issued before the backup and matches the original
-bytes, that the host's consumer certificate still works against `/rhsm`, and
-that both Smart Proxies point at the new namespace. Run `make diagnostics
+bytes, that the host's consumer certificate still works against `/rhsm`, that
+both Smart Proxies point at the new namespace, and that the backup suspended
+and resumed the cron CronJobs and the restored ones are scheduled. Run `make diagnostics
 KIND_NAMESPACE=foreman-restore` after a failure.
 
 ### Back up a Smart Proxy with content

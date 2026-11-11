@@ -1,0 +1,53 @@
+{{- if .Values.cron.enabled }}
+{{- /*
+One CronJob per period of Foreman's cron tasks (lib/tasks/cron.rake), as
+foremanctl runs one systemd timer per period. The pods run outside Helm hooks,
+so they read the ConfigMap of the web and Dynflow pods. Before the tasks the
+same rake process runs db:abort_if_pending_migrations, the check foremanctl
+runs before it starts Foreman: a run whose image is newer than the database
+schema fails instead of working on that schema.
+*/}}
+{{- $root := . }}
+{{- $cron := .Values.cron }}
+{{- range $period := list "hourly" "daily" "weekly" "monthly" }}
+{{- $settings := index $cron.periods $period }}
+{{- if $settings.enabled }}
+{{- $component := printf "cron-%s" $period }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  {{- /* Job names add 11 characters to the CronJob name and must fit in 63. */}}
+  name: {{ printf "%s-%s" (include "foreman.fullname" $root | trunc (int (sub 51 (len $component))) | trimSuffix "-") $component }}
+  labels:
+    {{- include "foreman.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  schedule: {{ $settings.schedule | quote }}
+  {{- with $cron.timeZone }}
+  timeZone: {{ . | quote }}
+  {{- end }}
+  concurrencyPolicy: {{ $cron.concurrencyPolicy }}
+  startingDeadlineSeconds: {{ $cron.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ $cron.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ $cron.failedJobsHistoryLimit }}
+  jobTemplate:
+    metadata:
+      labels:
+        {{- include "foreman.labels" $root | nindent 8 }}
+        app.kubernetes.io/component: {{ $component }}
+    spec:
+      backoffLimit: {{ $cron.backoffLimit }}
+      activeDeadlineSeconds: {{ $cron.activeDeadlineSeconds }}
+      template:
+        {{- include "foreman.jobPodTemplate" (dict
+          "context" $root
+          "component" $component
+          "container" "cron"
+          "command" (list "foreman-rake" "db:abort_if_pending_migrations" (printf "cron:%s" $period))
+          "web" true
+          "restartPolicy" "Never"
+          "resources" $cron.resources) | nindent 8 }}
+{{- end }}
+{{- end }}
+{{- end }}
