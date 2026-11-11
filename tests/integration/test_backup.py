@@ -297,5 +297,10 @@ def test_restored_host_and_consumer(restored, state):
 def test_restored_smart_proxies_point_at_the_new_namespace(restored, state):
     proxies = restored.api.get("/api/v2/smart_proxies")["results"]
     assert sorted(proxy["name"] for proxy in proxies) == state["proxies"]
-    for proxy in proxies:
+    # Proxies of the restored release use in-cluster Service names and must
+    # follow the namespace. Proxies outside the cluster (a capsule registered
+    # by another test in the same Foreman) keep their URL.
+    in_cluster = [proxy for proxy in proxies if ".svc" in proxy["url"]]
+    assert in_cluster, proxies
+    for proxy in in_cluster:
         assert f".{TARGET_NAMESPACE}.svc" in proxy["url"], proxy
