@@ -52,7 +52,7 @@ def test_enabled_renders_three_deployments(enabled):
         (container,) = pod_spec(deployment)["containers"]
         assert container["command"][:-1] == SIDEKIQ, name
         configs[name] = container["command"][-1]
-        assert container["image"] == "quay.io/foreman/foreman:nightly"
+        assert container["image"] == "quay.io/foreman/foreman:5.0"
         assert container["workingDir"] == "/usr/share/foreman"
         for probe in ("startupProbe", "readinessProbe", "livenessProbe"):
             assert container[probe]["exec"]["command"] == PROBE, (name, probe)

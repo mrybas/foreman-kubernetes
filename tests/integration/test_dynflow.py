@@ -94,4 +94,8 @@ def test_report_rendering_task_succeeds(api_url):  # noqa: F811
 
     status, report = api(f"{api_url}{scheduled['data_url']}")
     assert status == 200
+    # The report data_url returns a JSON array. Some image streams send it with
+    # a non-JSON content type, so the client leaves it as a string; parse it.
+    if isinstance(report, str):
+        report = json.loads(report)
     assert "admin" in [row["Login"] for row in report]

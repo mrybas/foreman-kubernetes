@@ -150,7 +150,7 @@ httpd:
 proxy:
   image:
     repository: quay.io/foreman/foreman-proxy
-    tag: nightly
+    tag: "5.0"
     digest: ""
     pullPolicy: IfNotPresent
   logLevel: INFO
@@ -246,7 +246,7 @@ registration:
 pulp:
   image:
     repository: quay.io/foreman/pulp
-    tag: foreman-nightly
+    tag: foreman-5.0
     digest: ""
     pullPolicy: IfNotPresent
   # Secret in the release namespace with the keys named below.

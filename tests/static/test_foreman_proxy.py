@@ -481,7 +481,7 @@ def test_registration_job(render):
     job = manifests["Job", f"{FULLNAME}-registration-1"]
     assert job["metadata"]["annotations"]["helm.sh/hook"] == "post-install,post-upgrade"
     (container,) = pod_spec(job)["containers"]
-    assert container["image"] == "quay.io/foreman/foreman-proxy:nightly"
+    assert container["image"] == "quay.io/foreman/foreman-proxy:5.0"
     values = {name: item.get("value") for name, item in env(container).items()}
     assert values["FOREMAN_URL"] == f"https://{FOREMAN}"
     assert values["PROXY_NAME"] == NAME

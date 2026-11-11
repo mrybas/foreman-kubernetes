@@ -59,7 +59,7 @@ def test_enabled_renders_workloads(pulp):
                           ("worker", "pulp-worker")):
         (container,) = pod_spec(deployment(pulp, name))["containers"]
         assert container["command"] == [command]
-        assert container["image"] == "quay.io/foreman/pulp:foreman-nightly"
+        assert container["image"] == "quay.io/foreman/pulp:foreman-5.0"
 
 
 def test_migration_hook_runs_before_workloads(pulp):

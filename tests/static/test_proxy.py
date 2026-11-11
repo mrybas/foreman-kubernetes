@@ -71,7 +71,7 @@ def test_deployment(enabled):
     assert spec["securityContext"]["fsGroup"] == 991
     assert spec["automountServiceAccountToken"] is False
     (container,) = spec["containers"]
-    assert container["image"] == "quay.io/foreman/foreman-proxy:nightly"
+    assert container["image"] == "quay.io/foreman/foreman-proxy:5.0"
     assert container["command"] == ["/usr/share/foreman-proxy/bin/smart-proxy"]
     assert env(container)["FOREMAN_PROXY_ENABLED_PLUGINS"]["value"] == "remote_execution_ssh ansible"
     assert container["resources"]["requests"]["memory"]
