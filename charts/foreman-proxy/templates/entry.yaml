@@ -1,0 +1,26 @@
+{{- /*
+Gateway API routes in front of the Service that pass TLS through to httpd
+and foreman-proxy, which terminate it.
+*/}}
+{{- $service := .Values.service }}
+{{- range $name, $port := $service.nodePorts }}
+{{- if and $port (eq $service.type "ClusterIP") }}
+{{- fail (printf "service.nodePorts.%s needs service.type NodePort or LoadBalancer" $name) }}
+{{- end }}
+{{- end }}
+{{- with .Values.gateway }}
+{{- if .enabled }}
+{{- $fullname := include "foreman-proxy.fullname" $ }}
+{{- if or (not .listeners.https) (not .listeners.proxyHttps) }}
+{{- fail "gateway.listeners.https and gateway.listeners.proxyHttps are required: both TLS routes would attach to every TLS listener" }}
+{{- end }}
+{{- include "httpd.gatewayRoutes" (dict "context" $ "gateway" . "prefix" "gateway" "name" $fullname
+  "hosts" (prepend $.Values.serverAliases $.Values.name | uniq) "labels" (include "foreman-proxy.labels" $)
+  "tls" (list (dict "name" $fullname "listener" .listeners.https "port" 443)
+              (dict "name" (printf "%s-proxy" $fullname) "listener" .listeners.proxyHttps "port" $.Values.proxy.port))
+  "http" (ternary (dict "listener" .listeners.http "port" 80) dict .http)
+  "listeners" (list (dict "name" .listeners.https "port" 443 "protocol" "TLS")
+                    (dict "name" .listeners.proxyHttps "port" $.Values.proxy.port "protocol" "TLS")
+                    (dict "name" (.listeners.http | default "http") "port" 80 "protocol" "HTTP"))) }}
+{{- end }}
+{{- end }}

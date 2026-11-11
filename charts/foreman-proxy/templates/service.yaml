@@ -30,11 +30,20 @@ spec:
       port: 80
       targetPort: httpd-http
       protocol: TCP
+      {{- with .Values.service.nodePorts.http }}
+      nodePort: {{ . }}
+      {{- end }}
     - name: https
       port: 443
       targetPort: httpd-https
       protocol: TCP
+      {{- with .Values.service.nodePorts.https }}
+      nodePort: {{ . }}
+      {{- end }}
     - name: proxy-https
       port: {{ .Values.proxy.port }}
       targetPort: proxy-https
       protocol: TCP
+      {{- with .Values.service.nodePorts.proxyHttps }}
+      nodePort: {{ . }}
+      {{- end }}

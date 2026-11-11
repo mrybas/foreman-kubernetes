@@ -465,9 +465,9 @@ enforces NetworkPolicy. Without httpd the chart adds no such policy, because
 Foreman then trusts none of these headers.
 The server CA is published at `/pub/katello-server-ca.crt`.
 
-The Service is `ClusterIP` by default. Set `httpd.service.type=LoadBalancer`,
-and `httpd.service.externalTrafficPolicy=Local` to keep client addresses, to
-expose it outside the cluster. Set `foreman.trustedProxies` to the pod network
+The Service is `ClusterIP` by default; see
+[Exposing Foreman](#exposing-foreman) for the ways to reach it from outside
+the cluster. Set `foreman.trustedProxies` to the pod network
 range so Foreman logs the client address that httpd forwards; httpd replaces
 any `X-Forwarded-For` the client sends. With Pulp enabled, httpd also routes
 `/pulp/api/v3`, `/pulp/content` and the other Pulp paths, and maps a client
@@ -488,6 +488,108 @@ client certificate from the CA must be accepted and a self-signed one
 rejected, only the httpd pods of the release may connect to the Foreman web
 port, and the Pulp API through httpd must accept the Foreman client
 certificate as the Pulp administrator and refuse clients without it.
+
+## Exposing Foreman
+
+httpd terminates TLS itself, because it checks client certificates and passes
+them to Foreman, Katello (`/rhsm`) and Pulp (`/pulp/content` and the Pulp
+API). Anything in front of the httpd Service must therefore pass TLS through
+unchanged. A proxy that terminates TLS and forwards the client certificate in
+a header does not work: Katello cannot read the escaped certificate that
+ingress controllers send. Choose one of:
+
+| Option | Values | Needs |
+| --- | --- | --- |
+| Load balancer | `httpd.service.type=LoadBalancer` | A load balancer implementation, such as MetalLB or a cloud provider |
+| Node port | `httpd.service.type=NodePort`, optionally `httpd.service.nodePorts.http` and `.https` | Clients reach a node address |
+| Ingress with TLS passthrough | `httpd.ingress.enabled`, `httpd.ingress.className`, the controller's passthrough annotation in `httpd.ingress.annotations` | An ingress controller that supports TLS passthrough |
+| Gateway API | `httpd.gateway.enabled` with `httpd.gateway.parentRefs`, or `httpd.gateway.create.enabled` and `httpd.gateway.create.className` | The Gateway API CRDs with `TLSRoute` and an implementation that supports TLS passthrough |
+| Traefik | `httpd.traefik.enabled` | Traefik with its `traefik.io/v1alpha1` CRDs |
+
+All of them share these limits:
+
+- Proxies pick the backend by the server name (SNI) the client sends, so
+  clients must connect by `foreman.fqdn` or a name in `httpd.serverAliases`,
+  and the server certificate must cover it. A node port or load balancer
+  works by address too.
+- Port 80 serves `/pub` (the server CA) and unprotected content under
+  `/pulp/content`, and redirects everything else to HTTPS. Host registration
+  downloads the CA over it.
+- httpd sees the address of the proxy, or of the node with the default
+  `externalTrafficPolicy`, as the client address. Foreman looks up hosts by
+  that address for provisioning templates under `/unattended`. Only a node
+  port or load balancer with `httpd.service.externalTrafficPolicy=Local`
+  keeps the real client address.
+
+With a node port, clients connect to any node on the node ports; with fixed
+ports such as 30080 and 30443, for example:
+
+```console
+curl --cacert ca.crt --resolve foreman.example.com:30443:192.0.2.10 \
+  https://foreman.example.com:30443/api/v2/ping
+```
+
+Hosts and Smart Proxies expect ports 443 and 80, so put a TCP load balancer
+or port forwarding in front of the node ports that maps them back.
+
+The Ingress has a rule for `foreman.fqdn` and each name in
+`httpd.serverAliases`. Its `/` path points at port 443 of the Service, which
+the controller uses for passthrough. The paths in `httpd.ingress.httpPaths`
+(`/pub`, `/pulp/content` and `/pulp/isos`) point at port 80 for plain HTTP;
+other plain HTTP requests reach port 443 and fail instead of being redirected.
+The passthrough annotation depends on the controller:
+
+| Controller | `httpd.ingress.annotations` | Controller setting |
+| --- | --- | --- |
+| [ingress-nginx](https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/#ssl-passthrough) | `nginx.ingress.kubernetes.io/ssl-passthrough: "true"` | Start the controller with `--enable-ssl-passthrough` (Helm value `controller.extraArgs.enable-ssl-passthrough=true`) |
+| [HAProxy Ingress](https://haproxy-ingress.github.io/docs/configuration/keys/#ssl-passthrough) | `haproxy-ingress.github.io/ssl-passthrough: "true"`, and `haproxy-ingress.github.io/ssl-passthrough-http-port: "80"` for plain HTTP | None |
+| [HAProxy Kubernetes Ingress Controller](https://www.haproxy.com/documentation/kubernetes-ingress/community/configuration-reference/ingress/#ssl-passthrough) | `haproxy.org/ssl-passthrough: "true"` | None |
+| Traefik | Not possible with an Ingress; use `httpd.traefik.enabled` | |
+
+`make test-entry` tests ingress-nginx 1.15.1 (Helm chart 4.15.1). The HAProxy
+annotations are untested. ingress-nginx is no longer maintained.
+
+The Gateway API option creates a `TLSRoute` to port 443 and, unless
+`httpd.gateway.http` is false, an `HTTPRoute` to port 80, both for
+`foreman.fqdn` and `httpd.serverAliases`. They attach to the Gateways in
+`httpd.gateway.parentRefs`, to the listeners named in
+`httpd.gateway.listeners` (`https` and `http` by default). The `https`
+listener must use protocol `TLS` with `tls.mode: Passthrough`, and both
+listeners must allow routes from the release namespace. With
+`httpd.gateway.create.enabled` the chart creates that Gateway itself, named
+`<fullname>-httpd`, with listeners on ports 443 and 80 of the GatewayClass
+`httpd.gateway.create.className`. `TLSRoute` is served as
+`gateway.networking.k8s.io/v1` from Gateway API 1.5 and as `v1alpha2` by the
+experimental channel of older releases; the chart uses `v1` when the cluster
+serves it, otherwise `v1alpha2`, and refuses to render when neither is
+installed. For `helm template` without a cluster, pass
+`--api-versions gateway.networking.k8s.io/v1/TLSRoute` (plus `.../v1/HTTPRoute`
+and `.../v1/Gateway`). `make test-entry` tests Envoy Gateway 1.10.0, which
+bundles Gateway API 1.6.1.
+
+With `httpd.traefik.enabled` the chart creates an `IngressRouteTCP` with
+`tls.passthrough` on the entry points in `httpd.traefik.httpsEntryPoints`
+(`websecure`) and an `IngressRoute` on `httpd.traefik.httpEntryPoints`
+(`web`), both matching `foreman.fqdn` and `httpd.serverAliases`. It is
+rendered by the static tests only.
+
+The `foreman-proxy` chart has the same `service.type` and `service.nodePorts`
+values, plus `service.nodePorts.proxyHttps` for foreman-proxy, and a `gateway`
+option that adds a second `TLSRoute` to `proxy.port` (8443). A Gateway for it
+needs two TLS passthrough listeners, named in `gateway.listeners.https` and
+`gateway.listeners.proxyHttps`. It has no Ingress option, because an Ingress
+carries only ports 80 and 443.
+
+`make test-entry` installs ingress-nginx and Envoy Gateway, then installs or
+upgrades the release with `tests/kind/values-entry.yaml`: the httpd Service
+as a node port, an Ingress for ingress-nginx and a Gateway of Envoy Gateway.
+Through each of the three it checks HTTPS with the server certificate
+verified, the login page, `/pub` over plain HTTP, the redirect to HTTPS (not
+through the Ingress), that httpd accepts a client certificate from the CA and
+refuses a self-signed one, that the Foreman client certificate maps to the
+Pulp administrator, and that `/rhsm` authenticates a host registered with
+Katello by its consumer certificate. Run it after `make setup-kind`, alone or
+after `make test`. `make test` does not run these tests.
 
 ## Enable Katello
 
@@ -672,7 +774,8 @@ registration to hosts for a Foreman server with the Katello plugin that the
 One Service carries ports 80, 443 and 8443, so that all three answer under one
 host name, the `name` value. Katello pairs the two Smart Proxy records of a
 capsule by the host name of their URLs. Hosts and the Foreman server must
-resolve `name` to that Service.
+resolve `name` to that Service, or to a proxy in front of it, see
+[Exposing Foreman](#exposing-foreman).
 
 Pulp needs its own PostgreSQL database, Valkey or Redis, and a Secret, default
 `pulp-runtime`, with the keys from [Enable Pulp](#enable-pulp). Pulp reports

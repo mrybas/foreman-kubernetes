@@ -10,6 +10,9 @@ def pytest_configure(config):
         "make test-content-proxy installs")
     config.addinivalue_line(
         "markers", "runs_last: changes what the other tests use; runs after them")
+    config.addinivalue_line(
+        "markers", "entry: reaches httpd through the NodePort, Ingress and Gateway that "
+        "make test-entry installs")
 
 
 def pytest_collection_modifyitems(items):

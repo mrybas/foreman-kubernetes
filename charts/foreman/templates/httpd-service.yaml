@@ -24,8 +24,14 @@ spec:
       port: 80
       targetPort: http
       protocol: TCP
+      {{- with .Values.httpd.service.nodePorts.http }}
+      nodePort: {{ . }}
+      {{- end }}
     - name: https
       port: 443
       targetPort: https
       protocol: TCP
+      {{- with .Values.httpd.service.nodePorts.https }}
+      nodePort: {{ . }}
+      {{- end }}
 {{- end }}

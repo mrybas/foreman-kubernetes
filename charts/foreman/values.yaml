@@ -207,6 +207,71 @@ httpd:
     # Local keeps the client source address on NodePort and LoadBalancer
     # Services. Empty leaves the Kubernetes default.
     externalTrafficPolicy: ""
+    # Fixed node ports for ports 80 and 443 with type NodePort or
+    # LoadBalancer, in the cluster's node port range (default 30000-32767).
+    # Empty lets Kubernetes choose.
+    nodePorts:
+      http: ""
+      https: ""
+  # The options below put a proxy in front of the Service that passes TLS
+  # through unchanged, matched by the server name (SNI) the client sends.
+  # httpd still terminates TLS and checks client certificates, which /rhsm,
+  # /pulp/content and the Pulp API need. Proxies that terminate TLS
+  # themselves do not work: Katello cannot read the client certificate they
+  # forward. httpd sees the proxy's address as the client address.
+  #
+  # An Ingress for foreman.fqdn and serverAliases. The passthrough setting
+  # is controller specific, so set it in annotations, for example
+  # nginx.ingress.kubernetes.io/ssl-passthrough: "true" for ingress-nginx
+  # (started with --enable-ssl-passthrough). The rule for "/" points at port
+  # 443 of the Service, which the controller uses for TLS passthrough.
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    # Paths routed to port 80 of the Service, for plain HTTP clients on the
+    # controller's port 80. Other paths over plain HTTP reach port 443 and
+    # fail. Empty adds no such paths.
+    httpPaths:
+      - /pub
+      - /pulp/content
+      - /pulp/isos
+  # Gateway API: a TLSRoute (TLS passthrough to port 443) and an HTTPRoute
+  # (port 80) for foreman.fqdn and serverAliases. Needs the TLSRoute API,
+  # gateway.networking.k8s.io/v1 (Gateway API 1.5 or later) or v1alpha2
+  # (older experimental channel), and an implementation that supports it.
+  gateway:
+    enabled: false
+    # Existing Gateways to attach the routes to, as Gateway API parentRefs
+    # without sectionName ([{name: shared, namespace: gateways}]). Their
+    # listeners must allow routes from this namespace. Leave empty when
+    # create.enabled.
+    parentRefs: []
+    # Listener names (sectionName) the routes attach to. Empty attaches to
+    # every listener of a parent that accepts the route kind.
+    listeners:
+      https: https
+      http: http
+    # Add the HTTPRoute for port 80.
+    http: true
+    # Create a Gateway <fullname>-httpd with a TLS passthrough listener on
+    # 443 and an HTTP listener on 80, named as in listeners, and attach the
+    # routes to it.
+    create:
+      enabled: false
+      # GatewayClass of the Gateway, required.
+      className: ""
+      annotations: {}
+  # Traefik: an IngressRouteTCP with TLS passthrough for foreman.fqdn and
+  # serverAliases, and an IngressRoute for plain HTTP. A plain Ingress cannot
+  # pass TLS through on Traefik. Needs the traefik.io/v1alpha1 CRDs.
+  traefik:
+    enabled: false
+    httpsEntryPoints:
+      - websecure
+    # Empty adds no IngressRoute.
+    httpEntryPoints:
+      - web
   # Allow connections to the Foreman web port only from the httpd pods of this
   # release and the helm test pod, so that other pods cannot bypass httpd and
   # send their own client certificate or forwarding headers. Pods are matched

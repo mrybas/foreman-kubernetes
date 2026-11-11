@@ -614,3 +614,128 @@ loads none.
 {{- define "registration.fullname" -}}
 {{- include "foreman-proxy.componentName" (list . "registration") }}
 {{- end }}
+
+{{/*
+Gateway API routes to the httpd Service, and optionally the Gateway. Takes a
+dict: context (root), gateway (the gateway values), prefix (their values path,
+for messages), name (Gateway name), hosts, labels, tls (list of dicts with
+name, listener and Service port, one TLSRoute each), http (listener and port
+for the HTTPRoute, or empty) and listeners (the created Gateway's listeners:
+name, port, protocol).
+*/}}
+{{- define "httpd.gatewayRoutes" -}}
+{{- $ctx := .context }}
+{{- $gw := .gateway }}
+{{- $parents := $gw.parentRefs }}
+{{- if $gw.create.enabled }}
+{{- if $parents }}
+{{- fail (printf "%s: set either parentRefs or create.enabled, not both" .prefix) }}
+{{- end }}
+{{- if not $gw.create.className }}
+{{- fail (printf "%s.create.className is required with %s.create.enabled" .prefix .prefix) }}
+{{- end }}
+{{- $parents = list (dict "name" .name) }}
+{{- else if not $parents }}
+{{- fail (printf "%s.enabled needs parentRefs (an existing Gateway) or create.enabled" .prefix) }}
+{{- end }}
+{{- range $parents }}
+{{- if hasKey . "sectionName" }}
+{{- fail (printf "%s.parentRefs: set listener names in %s.listeners, not sectionName" $.prefix $.prefix) }}
+{{- end }}
+{{- end }}
+{{- $apis := $ctx.Capabilities.APIVersions }}
+{{- $tlsApi := "" }}
+{{- if $apis.Has "gateway.networking.k8s.io/v1/TLSRoute" }}
+{{- $tlsApi = "gateway.networking.k8s.io/v1" }}
+{{- else if $apis.Has "gateway.networking.k8s.io/v1alpha2/TLSRoute" }}
+{{- $tlsApi = "gateway.networking.k8s.io/v1alpha2" }}
+{{- else }}
+{{- fail (printf "%s.enabled needs the Gateway API TLSRoute (gateway.networking.k8s.io/v1 from Gateway API 1.5 or later, or v1alpha2 from the experimental channel) and an implementation that supports TLS passthrough; the cluster has neither version. For helm template pass --api-versions gateway.networking.k8s.io/v1/TLSRoute" .prefix) }}
+{{- end }}
+{{- $needed := list }}
+{{- if .http }}{{ $needed = append $needed "HTTPRoute" }}{{ end }}
+{{- if $gw.create.enabled }}{{ $needed = append $needed "Gateway" }}{{ end }}
+{{- range $needed }}
+{{- if not ($apis.Has (printf "gateway.networking.k8s.io/v1/%s" .)) }}
+{{- fail (printf "%s needs the Gateway API %s (gateway.networking.k8s.io/v1), which the cluster does not have" $.prefix .) }}
+{{- end }}
+{{- end }}
+{{- if $gw.create.enabled }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ .name }}
+  labels:
+    {{- .labels | nindent 4 }}
+  {{- with $gw.create.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  gatewayClassName: {{ $gw.create.className }}
+  listeners:
+    {{- range .listeners }}
+    - name: {{ .name }}
+      port: {{ .port }}
+      protocol: {{ .protocol }}
+      {{- if eq .protocol "TLS" }}
+      tls:
+        mode: Passthrough
+      {{- end }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+        kinds:
+          - kind: {{ ternary "TLSRoute" "HTTPRoute" (eq .protocol "TLS") }}
+    {{- end }}
+{{- end }}
+{{- range $route := .tls }}
+---
+apiVersion: {{ $tlsApi }}
+kind: TLSRoute
+metadata:
+  name: {{ $route.name }}
+  labels:
+    {{- $.labels | nindent 4 }}
+spec:
+  parentRefs:
+    {{- include "httpd.parentRefs" (list $parents $route.listener) | nindent 4 }}
+  hostnames:
+    {{- toYaml $.hosts | nindent 4 }}
+  rules:
+    - backendRefs:
+        - name: {{ $.name }}
+          port: {{ $route.port }}
+{{- end }}
+{{- with .http }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $.name }}
+  labels:
+    {{- $.labels | nindent 4 }}
+spec:
+  parentRefs:
+    {{- include "httpd.parentRefs" (list $parents .listener) | nindent 4 }}
+  hostnames:
+    {{- toYaml $.hosts | nindent 4 }}
+  rules:
+    - backendRefs:
+        - name: {{ $.name }}
+          port: {{ .port }}
+{{- end }}
+{{- end }}
+
+{{/* parentRefs as YAML: each parent with sectionName set to the listener, if any. */}}
+{{- define "httpd.parentRefs" -}}
+{{- $listener := index . 1 }}
+{{- $refs := list }}
+{{- range index . 0 }}
+{{- $ref := deepCopy . }}
+{{- if $listener }}{{ $_ := set $ref "sectionName" $listener }}{{ end }}
+{{- $refs = append $refs $ref }}
+{{- end }}
+{{- toYaml $refs }}
+{{- end }}

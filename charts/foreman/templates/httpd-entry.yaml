@@ -1,0 +1,114 @@
+{{- /*
+Entry points in front of the httpd Service that pass TLS through: an Ingress,
+Gateway API routes (and optionally the Gateway) and Traefik routes. httpd
+terminates TLS in every case.
+*/}}
+{{- $httpd := .Values.httpd }}
+{{- $service := $httpd.service }}
+{{- range $name, $port := $service.nodePorts }}
+{{- if and $port (eq $service.type "ClusterIP") }}
+{{- fail (printf "httpd.service.nodePorts.%s needs httpd.service.type NodePort or LoadBalancer" $name) }}
+{{- end }}
+{{- end }}
+{{- range $option := list "ingress" "gateway" "traefik" }}
+{{- if and (index $httpd $option).enabled (not $httpd.enabled) }}
+{{- fail (printf "httpd.%s.enabled needs httpd.enabled" $option) }}
+{{- end }}
+{{- end }}
+{{- if $httpd.enabled }}
+{{- $fullname := include "httpd.fullname" . }}
+{{- $hosts := prepend $httpd.serverAliases .Values.foreman.fqdn | uniq }}
+{{- with $httpd.ingress }}
+{{- if .enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "httpd.labels" $ | nindent 4 }}
+  {{- with .annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    {{- range $host := $hosts }}
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}
+                port:
+                  name: https
+          {{- range $httpd.ingress.httpPaths }}
+          - path: {{ . }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}
+                port:
+                  name: http
+          {{- end }}
+    {{- end }}
+{{- end }}
+{{- end }}
+{{- with $httpd.gateway }}
+{{- if .enabled }}
+{{- include "httpd.gatewayRoutes" (dict "context" $ "gateway" . "prefix" "httpd.gateway" "name" $fullname
+  "hosts" $hosts "labels" (include "httpd.labels" $)
+  "tls" (list (dict "name" $fullname "listener" .listeners.https "port" 443))
+  "http" (ternary (dict "listener" .listeners.http "port" 80) dict .http)
+  "listeners" (list (dict "name" (.listeners.https | default "https") "port" 443 "protocol" "TLS")
+                    (dict "name" (.listeners.http | default "http") "port" 80 "protocol" "HTTP"))) }}
+{{- end }}
+{{- end }}
+{{- with $httpd.traefik }}
+{{- if .enabled }}
+{{- if not ($.Capabilities.APIVersions.Has "traefik.io/v1alpha1/IngressRouteTCP") }}
+{{- fail "httpd.traefik.enabled needs the Traefik CRDs (traefik.io/v1alpha1 IngressRouteTCP) in the cluster; for helm template pass --api-versions traefik.io/v1alpha1/IngressRouteTCP" }}
+{{- end }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRouteTCP
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "httpd.labels" $ | nindent 4 }}
+spec:
+  entryPoints:
+    {{- toYaml .httpsEntryPoints | nindent 4 }}
+  routes:
+    - match: {{ include "httpd.traefikMatch" (dict "function" "HostSNI" "hosts" $hosts) | quote }}
+      services:
+        - name: {{ $fullname }}
+          port: 443
+  tls:
+    passthrough: true
+{{- if .httpEntryPoints }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "httpd.labels" $ | nindent 4 }}
+spec:
+  entryPoints:
+    {{- toYaml .httpEntryPoints | nindent 4 }}
+  routes:
+    - kind: Rule
+      match: {{ include "httpd.traefikMatch" (dict "function" "Host" "hosts" $hosts) | quote }}
+      services:
+        - name: {{ $fullname }}
+          port: 80
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

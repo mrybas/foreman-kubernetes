@@ -1,0 +1,20 @@
+# make test-entry: every entry point in front of httpd at once. The tests
+# reach each one on the Kind node address.
+httpd:
+  service:
+    type: NodePort
+    # In the lower part of the node port range, which Kubernetes leaves to
+    # fixed ports, so the proxies installed before cannot have taken them.
+    nodePorts:
+      http: 30080
+      https: 30081
+  ingress:
+    enabled: true
+    className: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+  gateway:
+    enabled: true
+    create:
+      enabled: true
+      className: eg

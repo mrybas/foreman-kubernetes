@@ -195,6 +195,11 @@ case "${1:-}" in
       --set proxy.containerGateway.enabled=true \
       --wait --wait-for-jobs --timeout 20m "${@:2}"
     ;;
+  deploy-entry-points)
+    # ingress-nginx and Envoy Gateway for make test-entry.
+    require_cluster
+    KUBE_CONTEXT="${context}" "${repo_root}/tests/kind/entry-points.sh"
+    ;;
   diagnostics)
     require_cluster
     kubectl --context "${context}" --namespace "${namespace}" get deployments,pods,services,jobs
@@ -209,6 +214,17 @@ case "${1:-}" in
           --selector "app.kubernetes.io/instance=${capsule_release}" --all-containers --tail=100 --prefix
       fi
     done
+    # make test-entry: the proxies in front of httpd and the Gateway API objects.
+    for entry_namespace in ingress-nginx envoy-gateway-system; do
+      if kubectl --context "${context}" get namespace "${entry_namespace}" >/dev/null 2>&1; then
+        kubectl --context "${context}" --namespace "${entry_namespace}" get deployments,pods,services
+        kubectl --context "${context}" --namespace "${entry_namespace}" logs \
+          --selector 'app.kubernetes.io/name in (ingress-nginx,envoy,gateway-helm)' --all-containers --tail=100 --prefix
+      fi
+    done
+    if kubectl --context "${context}" get crd tlsroutes.gateway.networking.k8s.io >/dev/null 2>&1; then
+      kubectl --context "${context}" --namespace "${namespace}" get gateways,tlsroutes,httproutes --output yaml
+    fi
     ;;
   teardown)
     if [[ -f "${ownership_file}" ]]; then
@@ -218,7 +234,7 @@ case "${1:-}" in
     fi
     ;;
   *)
-    echo 'Usage: run-minimal.sh {setup|deploy [helm option ...]|deploy-content-proxy [helm option ...]|diagnostics|teardown}' >&2
+    echo 'Usage: run-minimal.sh {setup|deploy [helm option ...]|deploy-content-proxy [helm option ...]|deploy-entry-points|diagnostics|teardown}' >&2
     exit 2
     ;;
 esac

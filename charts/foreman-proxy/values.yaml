@@ -88,6 +88,47 @@ service:
   # Local keeps the client source address on NodePort and LoadBalancer
   # Services. Empty leaves the Kubernetes default.
   externalTrafficPolicy: ""
+  # Fixed node ports for ports 80, 443 and proxy.port with type NodePort or
+  # LoadBalancer, in the cluster's node port range (default 30000-32767).
+  # Empty lets Kubernetes choose. Hosts reach the Smart Proxy at
+  # https://<name>:<proxy.port>, so a node port for proxyHttps only helps
+  # behind a proxy that maps it back to proxy.port.
+  nodePorts:
+    http: ""
+    https: ""
+    proxyHttps: ""
+
+# Gateway API in front of the Service: TLSRoutes that pass TLS through to
+# httpd (port 443) and foreman-proxy (proxy.port), and an HTTPRoute for port
+# 80, for name and serverAliases. httpd and foreman-proxy still terminate TLS
+# and check client certificates; they see the Gateway's address as the
+# client address. Needs the TLSRoute API, gateway.networking.k8s.io/v1
+# (Gateway API 1.5 or later) or v1alpha2 (older experimental channel), and an
+# implementation that supports it. An Ingress cannot carry proxy.port, so
+# this chart has no Ingress option.
+gateway:
+  enabled: false
+  # Existing Gateways to attach the routes to, as Gateway API parentRefs
+  # without sectionName ([{name: shared, namespace: gateways}]). Their
+  # listeners must allow routes from this namespace. Leave empty when
+  # create.enabled.
+  parentRefs: []
+  # Listener names (sectionName) the routes attach to. A Gateway needs two
+  # TLS passthrough listeners, on 443 and on proxy.port; set both names.
+  listeners:
+    https: https
+    proxyHttps: proxy-https
+    http: http
+  # Add the HTTPRoute for port 80.
+  http: true
+  # Create a Gateway <fullname> with TLS passthrough listeners on 443 and
+  # proxy.port and an HTTP listener on 80, named as in listeners, and
+  # attach the routes to it.
+  create:
+    enabled: false
+    # GatewayClass of the Gateway, required.
+    className: ""
+    annotations: {}
 
 httpd:
   image:

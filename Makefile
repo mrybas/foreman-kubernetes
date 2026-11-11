@@ -31,7 +31,7 @@ export KIND_CONFIG
 DISRUPTION_HELM_ARGS ?= --set replicaCount=2 --set httpd.replicas=2 --set dynflow.worker.replicas=2
 DISRUPTION_CAPSULE_HELM_ARGS ?= --set httpd.replicas=2
 
-.PHONY: lint setup-test-env test-static setup-kind test test-content-proxy test-backup test-upgrade test-disruption teardown-kind diagnostics
+.PHONY: lint setup-test-env test-static setup-kind test test-content-proxy test-backup test-upgrade test-disruption test-entry teardown-kind diagnostics
 # Prune directories that hold no charts: artifacts/ may contain root-owned
 # files after `sudo make test`, and find fails on unreadable directories.
 lint:
@@ -49,7 +49,7 @@ setup-kind:
 
 test:
 	tests/kind/run-minimal.sh deploy
-	$(TEST_PYTHON) -m pytest -v tests/integration -m "not backup and not content_proxy" --junitxml=artifacts/junit.xml
+	$(TEST_PYTHON) -m pytest -v tests/integration -m "not backup and not content_proxy and not entry" --junitxml=artifacts/junit.xml
 
 # Installs the foreman-proxy chart as a Smart Proxy with content of the release
 # installed by test, in $(CAPSULE_NAMESPACE), and tests it. Run it after test.
@@ -64,12 +64,20 @@ test-backup:
 
 test-upgrade:
 	tests/kind/run-minimal.sh deploy --set-string image.digest=$(UPGRADE_FROM_IMAGE_DIGEST)
-	$(TEST_PYTHON) -m pytest -v tests/upgrade tests/integration -m "not backup and not content_proxy" --junitxml=artifacts/junit.xml
+	$(TEST_PYTHON) -m pytest -v tests/upgrade tests/integration -m "not backup and not content_proxy and not entry" --junitxml=artifacts/junit.xml
 
 test-disruption:
 	tests/kind/run-minimal.sh deploy $(DISRUPTION_HELM_ARGS)
 	tests/kind/run-minimal.sh deploy-content-proxy $(DISRUPTION_CAPSULE_HELM_ARGS)
 	$(TEST_PYTHON) -m pytest -v -s -m disruption tests/disruption --junitxml=artifacts/junit.xml
+
+# Installs ingress-nginx and Envoy Gateway, installs or upgrades the release
+# with every entry point in front of httpd (NodePort, an Ingress and a
+# Gateway, all passing TLS through) and tests httpd through each of them.
+test-entry:
+	tests/kind/run-minimal.sh deploy-entry-points
+	tests/kind/run-minimal.sh deploy --values tests/kind/values-entry.yaml
+	$(TEST_PYTHON) -m pytest -v tests/integration -m entry --junitxml=artifacts/junit-entry.xml
 
 diagnostics:
 	tests/kind/run-minimal.sh diagnostics
