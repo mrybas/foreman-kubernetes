@@ -30,8 +30,10 @@ export KIND_CONFIG
 DISRUPTION_HELM_ARGS ?= --set replicaCount=2 --set httpd.replicas=2 --set dynflow.worker.replicas=2
 
 .PHONY: lint setup-test-env test-static setup-kind test test-content-proxy test-backup test-upgrade test-disruption teardown-kind diagnostics
+# Prune directories that hold no charts: artifacts/ may contain root-owned
+# files after `sudo make test`, and find fails on unreadable directories.
 lint:
-	@find . -type f -name Chart.yaml -not -path './.git/*' -exec sh -c 'for chart do helm lint "$${chart%/Chart.yaml}" || exit $$?; done' sh {} +
+	@find . \( -path ./.git -o -path ./artifacts -o -path ./.venv \) -prune -o -type f -name Chart.yaml -exec sh -c 'for chart do helm lint "$${chart%/Chart.yaml}" || exit $$?; done' sh {} +
 
 setup-test-env:
 	python3 -m venv .venv
