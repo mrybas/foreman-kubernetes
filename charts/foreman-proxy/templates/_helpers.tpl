@@ -134,27 +134,6 @@ hostAliases:
 {{- end }}
 {{- end }}
 
-{{/*
-topologySpreadConstraints for a pod of a replicated workload, empty for one
-replica. Takes (dict "context" $ "component" "<component>" "replicas" N).
-Copied from the foreman chart.
-*/}}
-{{- define "foreman-proxy.topologySpread" -}}
-{{- $spread := .context.Values.topologySpread }}
-{{- if and $spread.enabled (gt (int .replicas) 1) -}}
-topologySpreadConstraints:
-  - maxSkew: {{ $spread.maxSkew }}
-    topologyKey: {{ $spread.topologyKey }}
-    whenUnsatisfiable: {{ $spread.whenUnsatisfiable }}
-    labelSelector:
-      matchLabels:
-        {{- include "foreman-proxy.selectorLabels" .context | nindent 8 }}
-        app.kubernetes.io/component: {{ .component }}
-    matchLabelKeys:
-      - pod-template-hash
-{{- end }}
-{{- end }}
-
 {{/* Pulp. Copied from the foreman chart, with the mirror settings. */}}
 {{- define "pulp.fullname" -}}
 {{- printf "%s-pulp" (include "foreman-proxy.fullname" .) | trunc 52 | trimSuffix "-" }}
@@ -421,15 +400,6 @@ initContainers:
 {{- end }}
 {{- end }}
 {{- $storage.type }}
-{{- end }}
-
-{{/*
-"true" when the Pulp pods must run on the node of the content volume:
-filesystem storage with pulp.storage.colocate. S3 storage has no volume to
-follow, so its pods can be spread and given a budget.
-*/}}
-{{- define "pulp.colocated" -}}
-{{- and (eq (include "pulp.storageType" .) "filesystem") .Values.pulp.storage.colocate | ternary "true" "false" }}
 {{- end }}
 
 {{- define "pulp.s3CaPath" -}}

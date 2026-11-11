@@ -17,8 +17,20 @@ serverAliases: []
 
 imagePullSecrets: []
 
-# Spread the replicas of Pulp across nodes when pulp.storage.colocate is
-# false. ScheduleAnyway makes it a preference.
+# A PodDisruptionBudget (PDB) with maxUnavailable for each workload with more
+# than one replica, so that draining a node evicts its replicas one at a time:
+# httpd, and the Pulp Deployments with S3 storage or
+# pulp.storage.colocate=false. With colocated filesystem storage every Pulp pod
+# must run on one node, so a budget would block the drain of that node.
+# unhealthyPodEvictionPolicy is AlwaysAllow, so pods that are not ready never
+# block a drain. foreman-proxy always runs one replica.
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+# Spread the replicas of the same workloads across nodes. ScheduleAnyway
+# makes it a preference: pods still start when there are fewer nodes than
+# replicas.
 topologySpread:
   enabled: true
   topologyKey: kubernetes.io/hostname

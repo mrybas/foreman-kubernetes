@@ -30,6 +30,9 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- include "foreman-proxy.hostAliases" . | nindent 6 }}
+      {{- with include "foreman-proxy.topologySpread" (dict "context" . "component" "httpd" "replicas" .Values.httpd.replicas) }}{{ . | nindent 6 }}{{ end }}
+      # Time for the preStop hook and the requests that are still running.
+      terminationGracePeriodSeconds: 60
       # SSLProxyMachineCertificateFile needs the client certificate and key in
       # one file.
       initContainers:
@@ -85,6 +88,21 @@ spec:
             - name: httpd-https
               containerPort: 8443
               protocol: TCP
+          # As in the foreman chart: SIGTERM stops httpd at once and cuts
+          # running requests, such as package downloads. Instead, wait until
+          # the removal of this pod from the Service endpoints has reached
+          # every node, then stop gracefully: httpd finishes the running
+          # requests and exits.
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - >-
+                    sleep 10;
+                    httpd -f /etc/httpd-foreman-proxy/httpd.conf -k graceful-stop;
+                    while kill -0 1 2>/dev/null; do sleep 1; done
           readinessProbe:
             httpGet:
               path: /pub/

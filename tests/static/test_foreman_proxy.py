@@ -267,6 +267,14 @@ def test_pulp_templates_are_a_copy_of_the_foreman_chart():
         assert copy.rstrip() == original.rstrip(), name
 
 
+def test_disruption_budgets_are_a_copy_of_the_foreman_chart():
+    """The budget template differs only by the helper prefix; the workload
+    lists are compared with the helpers below."""
+    copy = (CHART / "templates" / "poddisruptionbudgets.yaml").read_text()
+    original = (ROOT / "charts" / "foreman" / "templates" / "poddisruptionbudgets.yaml").read_text()
+    assert copy == original.replace('"foreman.', '"foreman-proxy.')
+
+
 TEMPLATE_ACTION = re.compile(r"\{\{-?\s*(.*?)\s*-?\}\}", re.S)
 
 
@@ -294,6 +302,7 @@ def defines(chart):
 
 # Helpers both charts define on purpose differently, and why.
 INTENTIONAL_DIFFERENCES = {
+    "foreman.replicatedWorkloads": "the proxy has httpd and Pulp only",
     "httpd.pub": "the foreman chart serves /pub from the Foreman CA bundle Secret",
     "httpd.pulpRemoteUser": "the proxy trusts the Foreman client certificate names",
     "httpd.serverNames": "the proxy is named by .Values.name",

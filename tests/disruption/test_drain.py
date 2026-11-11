@@ -17,7 +17,8 @@ Candlepin restart (Katello only): a second client requests /api/v2/ping and
 Nothing is asserted; the failures of all probes in this phase, including
 /api/v2/status, are measured.
 
-Results go to artifacts/disruption-report.json and the JUnit properties.
+Results go to artifacts/disruption-report.json (see conftest.py) and the JUnit
+properties.
 """
 
 import json
@@ -40,7 +41,6 @@ HTTPD = f"{RELEASE}-foreman-httpd"
 CANDLEPIN = f"{RELEASE}-foreman-candlepin"
 CLIENT_IMAGE = os.environ.get("DISRUPTION_CLIENT_IMAGE", "curlimages/curl:8.17.0")
 ARTIFACTS = Path(__file__).resolve().parents[2] / "artifacts"
-REPORT = ARTIFACTS / "disruption-report.json"
 # Seconds of requests before and after each disruption.
 SETTLE = 20
 
@@ -64,6 +64,8 @@ for name in ${PROBES}; do
     ping) probe ping /api/v2/ping & ;;
     pulp) probe pulp /pulp/api/v3/status/ & ;;
     candlepin) probe candlepin /rhsm/status & ;;
+    content) probe content /pulp/content/ & ;;
+    pub) probe pub /pub/katello-server-ca.crt & ;;
   esac
 done
 wait
@@ -93,10 +95,10 @@ def nodes_of(component):
             if not pod["metadata"].get("deletionTimestamp")]
 
 
-def wait_available(name, timeout=900):
+def wait_available(name, timeout=900, namespace=NAMESPACE):
     deadline = time.monotonic() + timeout
     while True:
-        deployment = get("deployment", name)
+        deployment = get("deployment", name, namespace=namespace)
         wanted = deployment["spec"]["replicas"]
         status = deployment["status"]
         if (status.get("availableReplicas") == wanted and status.get("updatedReplicas") == wanted
@@ -108,14 +110,16 @@ def wait_available(name, timeout=900):
 
 class Client:
     """A pod on the control-plane node, which is never drained, that runs
-    the probes against the httpd Service."""
+    the probes against an httpd Service, by default the release's."""
 
-    def __init__(self, name, probes):
+    def __init__(self, name, probes, fqdn=FQDN, service=(NAMESPACE, HTTPD)):
         self.name = name
         self.probes = probes
+        self.fqdn = fqdn
+        self.service = service
 
     def start(self):
-        httpd_ip = get("service", HTTPD)["spec"]["clusterIP"]
+        httpd_ip = get("service", self.service[1], namespace=self.service[0])["spec"]["clusterIP"]
         pod = {
             "apiVersion": "v1",
             "kind": "Pod",
@@ -132,7 +136,7 @@ class Client:
                     "name": "client",
                     "image": CLIENT_IMAGE,
                     "command": ["/bin/sh", "-c", CLIENT_SCRIPT],
-                    "env": [{"name": "FQDN", "value": FQDN},
+                    "env": [{"name": "FQDN", "value": self.fqdn},
                             {"name": "HTTPD_IP", "value": httpd_ip},
                             {"name": "PROBES", "value": " ".join(self.probes)},
                             {"name": "ADMIN_PASSWORD", "value": ADMIN_PASSWORD}],
@@ -198,27 +202,8 @@ def save_logs():
 
 
 @pytest.fixture(scope="module")
-def workers():
-    nodes = get("nodes", namespace=None)["items"]
-    names = [node["metadata"]["name"] for node in nodes
-             if "node-role.kubernetes.io/control-plane" not in node["metadata"]["labels"]]
-    if len(names) < 2:
-        pytest.fail("needs two worker nodes: make setup-kind KIND_CONFIG=tests/kind/cluster-disruption.yaml")
-    return names
-
-
-@pytest.fixture(scope="module")
 def katello():
     return kubectl("get", "deployment", CANDLEPIN, check=False).returncode == 0
-
-
-@pytest.fixture(scope="module")
-def report():
-    result = {}
-    yield result
-    REPORT.parent.mkdir(exist_ok=True)
-    REPORT.write_text(json.dumps(result, indent=2) + "\n")
-    print(json.dumps(result, indent=2))
 
 
 def test_replicas_are_spread_with_budgets(workers):

@@ -609,11 +609,17 @@ ready when it serves the login page. The API ping is not used for this,
 because with Katello it waits for Candlepin and Pulp, so their restart would
 remove every web pod from the Service.
 
-Every pod of the chart, including the hook Jobs, their init containers and the
-`helm test` pod, meets the `restricted`
-[Pod Security Standard](https://kubernetes.io/docs/concepts/security/pod-security-standards/).
-`make test` installs the chart and the test fixtures into a namespace
-labelled `pod-security.kubernetes.io/enforce=restricted`.
+The `foreman-proxy` Helm chart has the same `podDisruptionBudget` and
+`topologySpread` values. They apply to httpd and, under the same storage
+conditions, to Pulp. foreman-proxy itself always runs one replica. httpd pods
+stop as in the `foreman` chart.
+
+Every pod of the `foreman` chart, including the hook Jobs, their init
+containers and the `helm test` pod, meets the `restricted`
+[Pod Security Standard](https://kubernetes.io/docs/concepts/security/pod-security-standards/),
+and so does every pod of the `foreman-proxy` chart. `make test` and
+`make test-content-proxy` install the charts and the test fixtures into
+namespaces labelled `pod-security.kubernetes.io/enforce=restricted`.
 
 `make test-disruption` drains a node under load. It needs a Kind cluster with
 a control-plane node and two workers:
@@ -634,8 +640,16 @@ Katello the pod also requests `/api/v2/ping`, which must succeed too. With
 Katello it requests the Pulp status instead, and then deletes the Candlepin
 pod while a second pod requests `/api/v2/ping` and `/rhsm/status`. The Pulp and
 Candlepin results are written to `artifacts/disruption-report.json`, not
-asserted. The test does not run more than one replica of the Dynflow hosts
-queue worker or of Pulp.
+asserted.
+
+`make test-disruption` then installs a Smart Proxy with content as
+`make test-content-proxy` does, with two httpd replicas
+(`DISRUPTION_CAPSULE_HELM_ARGS`). It drains the worker that runs one of the
+Smart Proxy's httpd pods but not its Pulp, whose pods share a volume on the
+other worker. A pod on the control-plane node requests the Pulp content app,
+the Pulp status and `/pub` through the Smart Proxy's Service. Every request
+must succeed. The test does not run more than one replica of the Dynflow
+hosts queue worker or of Pulp.
 
 ## Smart Proxy with content
 

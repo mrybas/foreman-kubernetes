@@ -28,9 +28,9 @@ drained or lost, until Kubernetes starts a replacement pod.
 
 | Component | Replicas | State | Limits |
 | --- | --- | --- | --- |
-| httpd | `httpd.replicas` | None | The chart adds no PDB and does not spread httpd replicas across nodes |
+| httpd | `httpd.replicas` | None | None known. With more than one replica, a PDB and spreading as in the `foreman` chart |
 | foreman-proxy | always 1 | Running Remote Execution and Ansible jobs, in memory. Container gateway data in PostgreSQL | See [Remote Execution and Ansible](quick-start.md#remote-execution-and-ansible) |
-| Pulp API, content app, worker | `pulp.api.replicas`, `pulp.content.replicas`, `pulp.worker.replicas` | As in the `foreman` chart | As in the `foreman` chart, but the chart adds no PDB |
+| Pulp API, content app, worker | `pulp.api.replicas`, `pulp.content.replicas`, `pulp.worker.replicas` | As in the `foreman` chart | As in the `foreman` chart |
 
 The backup scripts do not cover a `foreman-proxy` release.
 

@@ -20,9 +20,10 @@ ownership_file="${repo_root}/artifacts/kind-cluster"
 # In a cluster with worker nodes (KIND_CONFIG), keep the PostgreSQL and Valkey
 # fixtures on the control-plane node, so that draining a worker does not lose
 # their data. Their first pod is replaced before anything uses them.
+# pin_fixture DEPLOYMENT [NAMESPACE]
 pin_fixture() {
   if [[ -n "$(kubectl --context "${context}" get nodes --selector '!node-role.kubernetes.io/control-plane' --output name)" ]]; then
-    kubectl --context "${context}" --namespace "${namespace}" patch "deployment/$1" --type merge --patch \
+    kubectl --context "${context}" --namespace "${2:-${namespace}}" patch "deployment/$1" --type merge --patch \
       '{"spec":{"template":{"spec":{"nodeSelector":{"node-role.kubernetes.io/control-plane":""},"tolerations":[{"key":"node-role.kubernetes.io/control-plane","effect":"NoSchedule"}]}}}}'
   fi
 }
@@ -155,6 +156,8 @@ case "${1:-}" in
     kubectl --context "${context}" --namespace "${capsule_namespace}" apply \
       --filename "${repo_root}/tests/kind/dependencies-content-proxy.yaml" \
       --filename "${repo_root}/tests/kind/dependencies-valkey.yaml"
+    pin_fixture postgresql "${capsule_namespace}"
+    pin_fixture valkey "${capsule_namespace}"
     kubectl --context "${context}" --namespace "${capsule_namespace}" create secret generic pulp-runtime \
       --from-literal=DATABASE_PASSWORD=pulp-test --from-literal=REDIS_URL=redis://valkey:6379/8 \
       --from-literal=SECRET_KEY='fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210' \

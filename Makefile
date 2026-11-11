@@ -26,8 +26,10 @@ export UPGRADE_FROM_IMAGE_DIGEST UPGRADE_TO_IMAGE_TAG UPGRADE_TO_IMAGE_DIGEST
 # tests/kind/cluster-disruption.yaml (two worker nodes).
 KIND_CONFIG ?=
 export KIND_CONFIG
-# Helm options test-disruption adds to the test installation.
+# Helm options test-disruption adds to the test installation and to the Smart
+# Proxy with content it installs next to it.
 DISRUPTION_HELM_ARGS ?= --set replicaCount=2 --set httpd.replicas=2 --set dynflow.worker.replicas=2
+DISRUPTION_CAPSULE_HELM_ARGS ?= --set httpd.replicas=2
 
 .PHONY: lint setup-test-env test-static setup-kind test test-content-proxy test-backup test-upgrade test-disruption teardown-kind diagnostics
 # Prune directories that hold no charts: artifacts/ may contain root-owned
@@ -66,6 +68,7 @@ test-upgrade:
 
 test-disruption:
 	tests/kind/run-minimal.sh deploy $(DISRUPTION_HELM_ARGS)
+	tests/kind/run-minimal.sh deploy-content-proxy $(DISRUPTION_CAPSULE_HELM_ARGS)
 	$(TEST_PYTHON) -m pytest -v -s -m disruption tests/disruption --junitxml=artifacts/junit.xml
 
 diagnostics:

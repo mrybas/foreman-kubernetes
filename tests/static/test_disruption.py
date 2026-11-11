@@ -163,13 +163,9 @@ RESTRICTED_VOLUMES = {"configMap", "csi", "downwardAPI", "emptyDir", "ephemeral"
                       "persistentVolumeClaim", "projected", "secret"}
 
 
-@pytest.mark.parametrize("values", [{}, TWO], ids=["default", "everything"])
-def test_every_pod_meets_the_restricted_profile(render, values):
+def assert_restricted(workloads):
     """The checks of the Kubernetes restricted Pod Security profile, for every
-    pod template of the chart: Deployments, hook Jobs and the helm test Pod,
-    with their init containers."""
-    manifests = render(values)
-    workloads = manifests.of_kind("Deployment", "Job", "Pod")
+    pod template, with its init containers."""
     assert workloads
     for workload in workloads:
         spec = pod_spec(workload)
@@ -194,6 +190,12 @@ def test_every_pod_meets_the_restricted_profile(render, values):
             assert seccomp.get("type") in ("RuntimeDefault", "Localhost"), where
             assert "procMount" not in context, where
             assert not any(port.get("hostPort") for port in container.get("ports", [])), where
+
+
+@pytest.mark.parametrize("values", [{}, TWO], ids=["default", "everything"])
+def test_every_pod_meets_the_restricted_profile(render, values):
+    """Deployments, hook Jobs and the helm test Pod of the chart."""
+    assert_restricted(render(values).of_kind("Deployment", "Job", "Pod"))
 
 
 def test_web_database_pool_has_room_beside_puma_threads(render):

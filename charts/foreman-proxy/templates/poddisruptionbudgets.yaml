@@ -1,0 +1,21 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- range (include "foreman-proxy.replicatedWorkloads" . | fromJson).workloads }}
+{{- if gt (int .replicas) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .name }}
+  labels:
+    {{- include "foreman-proxy.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ .component }}
+spec:
+  maxUnavailable: {{ $.Values.podDisruptionBudget.maxUnavailable }}
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      {{- include "foreman-proxy.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: {{ .component }}
+{{- end }}
+{{- end }}
+{{- end }}
