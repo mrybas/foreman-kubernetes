@@ -54,9 +54,9 @@ disposable PostgreSQL database in a Kind cluster. They require a native Linux
 AMD64 host, Podman, Kind, kubectl, Helm 4, and Python 3.10 or newer. See the
 [quick start](docs/quick-start.md) for setup, test, and cleanup commands, and
 [component limits](docs/component-limits.md) for replica counts and known
-limits. CI's **Foreman Installation**, **Foreman Upgrade** and **Foreman
-Disruption** jobs use those same Makefile targets and publish pytest results as
-JUnit XML.
+limits. CI's **Foreman Installation**, **Foreman Upgrade**, **Foreman
+Disruption** and **Foreman Entry Points** jobs use those same Makefile targets
+and publish pytest results as JUnit XML.
 
 ## Status and collaboration
 
