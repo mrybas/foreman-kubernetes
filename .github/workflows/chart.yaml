@@ -43,8 +43,13 @@ jobs:
             echo "No usable base commit; running the full suite."
             exit 0
           fi
-          if git diff --name-only "$base" "$head" \
-               | grep -qE '^(charts/|tests/|Makefile|\.github/workflows/(tests|chart)\.yaml)'; then
+          # Capture the diff first, then match from a herestring. Piping git
+          # straight into `grep -q` breaks under `set -o pipefail`: grep exits
+          # on the first match and closes the pipe, git gets SIGPIPE (exit 141),
+          # and pipefail then makes the whole pipeline non-zero -- so a large
+          # diff that *did* touch charts would wrongly take the else branch.
+          changed="$(git diff --name-only "$base" "$head")"
+          if grep -qE '^(charts/|tests/|Makefile|\.github/workflows/(tests|chart)\.yaml)' <<<"$changed"; then
             echo "charts=true" >> "$GITHUB_OUTPUT"
           else
             echo "charts=false" >> "$GITHUB_OUTPUT"
