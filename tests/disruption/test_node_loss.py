@@ -19,8 +19,12 @@ and asserts only a generous safety ceiling. The F2 SLO is set from the measured
 numbers, not asserted here. It restarts the killed node afterwards so the
 cluster is healthy for teardown.
 
+The F2 SLO is 60 s, set from the first measurement (recovery window ~42 s on
+default Kubernetes, bounded by node-monitor-grace-period; see artifacts/ha-slo.md).
+The test asserts that bound.
+
 Env knobs: NODE_LOSS_OBSERVE_SECONDS (how long to watch after the kill, default
-150), NODE_LOSS_CEILING_SECONDS (safety ceiling for the assertion, default 180).
+150), NODE_LOSS_CEILING_SECONDS (the asserted recovery bound, default 60).
 """
 
 import os
@@ -47,7 +51,8 @@ from test_drain import (
 pytestmark = pytest.mark.disruption
 
 OBSERVE = int(os.environ.get("NODE_LOSS_OBSERVE_SECONDS", "150"))
-CEILING = int(os.environ.get("NODE_LOSS_CEILING_SECONDS", "180"))
+# The F2 SLO, set from the first measurement (~42 s). See artifacts/ha-slo.md.
+CEILING = int(os.environ.get("NODE_LOSS_CEILING_SECONDS", "60"))
 
 
 def container_runtime():
@@ -143,7 +148,7 @@ def test_sudden_node_loss_is_measured(workers, report, record_property):
     record_property("node_loss_web_last_failure", result["last_failure"])
     record_property("node_loss_web_recovery_window", window)
 
-    # Measure-first assertions: generous ceiling only, plus proof of recovery.
+    # Assert the F2 SLO bound (CEILING) and prove recovery actually happened.
     assert result["requests"] > 100, result
     assert result["failed"] < result["requests"], f"web never recovered: {result}"
     if window is not None:
