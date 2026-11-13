@@ -3,4 +3,4 @@ name: foreman-proxy
 description: Smart Proxy with content (Pulp) for a Foreman server with Katello
 type: application
 version: 0.1.0
-appVersion: nightly
+appVersion: "5.0"

@@ -6,201 +6,55 @@ on:
     branches:
       - develop
 
+# A newer push to the same branch or PR cancels an in-progress run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
-  lint:
-    name: Chart Lint
+  # Decide whether the heavy Kind suite needs to run. It runs only for pull
+  # requests that touch chart or test code; a push to develop (for example the
+  # merge of an already-tested PR) and doc-only changes run lint + static only.
+  changes:
+    name: Detect relevant changes
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    outputs:
+      charts: ${{ steps.filter.outputs.charts }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
         with:
-          version: v4.3.0
-      - name: Lint charts
-        run: make lint
-
-  static:
-    name: Chart Static Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
-        with:
-          version: v4.3.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: '3.12'
-      - name: Install test dependencies
-        run: make setup-test-env
-      - name: Run static chart tests
-        run: make test-static
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: chart-static-test-results
-          path: artifacts/junit-static.xml
-          if-no-files-found: warn
+          fetch-depth: 0
+      - id: filter
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          else
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+          fi
+          # No usable base (first push, force-push, new branch): run the suite.
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "charts=true" >> "$GITHUB_OUTPUT"
+            echo "No usable base commit; running the full suite."
+            exit 0
+          fi
+          if git diff --name-only "$base" "$head" \
+               | grep -qE '^(charts/|tests/|Makefile|\.github/workflows/(tests|chart)\.yaml)'; then
+            echo "charts=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "charts=false" >> "$GITHUB_OUTPUT"
+            echo "No chart/test changes; running lint + static only."
+          fi
 
   test:
-    name: Foreman Installation
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
-        with:
-          version: v4.3.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: '3.12'
-      - uses: helm/kind-action@0b5c88445f37b7e12a2ce1ecca7805b9046a74db # v1
-        with:
-          install_only: true
-          version: v0.33.0
-          kubectl_version: v1.34.1
-      - name: Install test dependencies
-        run: make setup-test-env
-      - name: Create Kind cluster using Podman
-        run: sudo --preserve-env=PATH make setup-kind
-      - name: Test Foreman installation
-        run: sudo --preserve-env=PATH make test
-      - name: Test Smart Proxy with content
-        run: sudo --preserve-env=PATH make test-content-proxy
-      - name: Test backup and restore
-        run: sudo --preserve-env=PATH make test-backup
-      - name: Installation diagnostics
-        if: failure()
-        run: sudo --preserve-env=PATH make diagnostics
-      - name: Remove Kind cluster
-        if: always()
-        run: sudo --preserve-env=PATH make teardown-kind
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: foreman-test-results
-          path: |
-            artifacts/junit.xml
-            artifacts/junit-content-proxy.xml
-            artifacts/junit-backup.xml
-          if-no-files-found: warn
-
-  upgrade:
-    name: Foreman Upgrade
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
-        with:
-          version: v4.3.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: '3.12'
-      - uses: helm/kind-action@0b5c88445f37b7e12a2ce1ecca7805b9046a74db # v1
-        with:
-          install_only: true
-          version: v0.33.0
-          kubectl_version: v1.34.1
-      - name: Install test dependencies
-        run: make setup-test-env
-      - name: Create Kind cluster using Podman
-        run: sudo --preserve-env=PATH make setup-kind
-      - name: Test upgrade and failed migrations
-        run: sudo --preserve-env=PATH make test-upgrade
-      - name: Upgrade diagnostics
-        if: failure()
-        run: sudo --preserve-env=PATH make diagnostics
-      - name: Remove Kind cluster
-        if: always()
-        run: sudo --preserve-env=PATH make teardown-kind
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: foreman-upgrade-test-results
-          path: |
-            artifacts/junit.xml
-            artifacts/upgrade/
-          if-no-files-found: warn
-
-  disruption:
-    name: Foreman Disruption
-    runs-on: ubuntu-latest
-    timeout-minutes: 50
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
-        with:
-          version: v4.3.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: '3.12'
-      - uses: helm/kind-action@0b5c88445f37b7e12a2ce1ecca7805b9046a74db # v1
-        with:
-          install_only: true
-          version: v0.33.0
-          kubectl_version: v1.34.1
-      - name: Install test dependencies
-        run: make setup-test-env
-      - name: Create Kind cluster with two workers using Podman
-        run: sudo --preserve-env=PATH make setup-kind KIND_CONFIG=tests/kind/cluster-disruption.yaml
-      - name: Test node drain
-        run: sudo --preserve-env=PATH make test-disruption
-      - name: Disruption diagnostics
-        if: failure()
-        run: sudo --preserve-env=PATH make diagnostics
-      - name: Remove Kind cluster
-        if: always()
-        run: sudo --preserve-env=PATH make teardown-kind
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: foreman-disruption-test-results
-          path: |
-            artifacts/junit.xml
-            artifacts/disruption-report.json
-          if-no-files-found: warn
-
-  entry:
-    name: Foreman Entry Points
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
-        with:
-          version: v4.3.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: '3.12'
-      - uses: helm/kind-action@0b5c88445f37b7e12a2ce1ecca7805b9046a74db # v1
-        with:
-          install_only: true
-          version: v0.33.0
-          kubectl_version: v1.34.1
-      - name: Install test dependencies
-        run: make setup-test-env
-      - name: Create Kind cluster using Podman
-        run: sudo --preserve-env=PATH make setup-kind
-      - name: Test Ingress, Gateway API and NodePort entry points
-        run: sudo --preserve-env=PATH make test-entry
-      - name: Entry points diagnostics
-        if: failure()
-        run: sudo --preserve-env=PATH make diagnostics
-      - name: Remove Kind cluster
-        if: always()
-        run: sudo --preserve-env=PATH make teardown-kind
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: foreman-entry-test-results
-          path: artifacts/junit-entry.xml
-          if-no-files-found: warn
+    name: Tests
+    needs: changes
+    uses: ./.github/workflows/tests.yaml
+    with:
+      # Heavy integration jobs: pull requests that changed chart/test code only.
+      integration: ${{ github.event_name == 'pull_request' && needs.changes.outputs.charts == 'true' }}

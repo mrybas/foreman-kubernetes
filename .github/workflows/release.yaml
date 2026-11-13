@@ -1,0 +1,52 @@
+name: Release charts
+
+# Tagging vX.Y.Z runs the full test suite and, only if it passes, packages the
+# foreman and foreman-proxy charts at version X.Y.Z and pushes them to GHCR as
+# OCI artifacts. Consume with, e.g.:
+#   helm install foreman oci://ghcr.io/mrybas/charts/foreman --version X.Y.Z
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  # Full gate: lint + static + all Kind integration jobs on the tagged commit.
+  test:
+    uses: ./.github/workflows/tests.yaml
+    with:
+      integration: true
+
+  publish:
+    name: Package and publish to GHCR
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
+        with:
+          version: v4.3.0
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Package and push charts
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          owner="$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')"
+          mkdir -p dist
+          for chart in charts/foreman charts/foreman-proxy; do
+            helm package "$chart" --version "$version" -d dist
+          done
+          for pkg in dist/*.tgz; do
+            echo "Pushing $pkg to oci://ghcr.io/${owner}/charts"
+            helm push "$pkg" "oci://ghcr.io/${owner}/charts"
+          done
