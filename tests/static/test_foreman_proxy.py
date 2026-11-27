@@ -265,6 +265,8 @@ def test_pulp_templates_are_a_copy_of_the_foreman_chart():
             original = original.removeprefix("{{- if .Values.pulp.enabled }}\n")
             original = original[:original.rstrip().rfind("{{- end }}")].rstrip() + "\n"
         assert copy.rstrip() == original.rstrip(), name
+    script = "pulp-content-liveness.py"
+    assert (CHART / "files" / script).read_text() == (ROOT / "charts" / "foreman" / "files" / script).read_text()
 
 
 def test_disruption_budgets_are_a_copy_of_the_foreman_chart():

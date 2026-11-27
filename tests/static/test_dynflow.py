@@ -54,8 +54,18 @@ def test_enabled_renders_three_deployments(enabled):
         arguments[name] = container["command"][len(SIDEKIQ):]
         assert container["image"] == "quay.io/foreman/foreman:5.0"
         assert container["workingDir"] == "/usr/share/foreman"
-        for probe in ("startupProbe", "readinessProbe", "livenessProbe"):
+        for probe in ("startupProbe", "readinessProbe"):
             assert container[probe]["exec"]["command"] == PROBE, (name, probe)
+        liveness = container["livenessProbe"]
+        if name == "orchestrator":
+            # Also needs its LISTEN session: without it jobs never finish.
+            ruby, flag, script = liveness["exec"]["command"]
+            assert (ruby, flag) == ("ruby", "-e")
+            assert "busy]" in script and "LISTEN %" in script and "DATABASE_URL" in script
+            assert "rescue PG::Error\n  exit 0" in script, "an unreachable database must pass"
+            assert liveness["timeoutSeconds"] >= 5
+        else:
+            assert liveness["exec"]["command"] == PROBE, name
         assert container["resources"]["requests"]["memory"] == "512Mi"
         assert pod_spec(deployment)["terminationGracePeriodSeconds"] >= 30
         labels = deployment["spec"]["template"]["metadata"]["labels"]

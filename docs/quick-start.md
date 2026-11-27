@@ -367,6 +367,12 @@ Pulp needs a PostgreSQL database, Valkey or Redis, and a Secret, default
 Keep the database field key. Pulp cannot read fields encrypted with a lost key.
 Pulp can share one Valkey with Dynflow: Pulp uses the database number in its
 URL, 8 in the example, Dynflow uses 6 and the Rails cache 4.
+Pulp opens this URL without timeouts. If Valkey stops answering without
+closing connections, for example because its node was lost, Pulp requests wait
+on it for minutes. Timeouts can be given in the URL, which redis-py reads:
+`redis://valkey:6379/8?socket_timeout=5&socket_connect_timeout=5&health_check_interval=30`.
+With them Pulp gives up on a dead connection after a few seconds and serves
+without the cache.
 The database host and name, the content and API URLs Pulp advertises, and the
 enabled Pulp plugins are values under `pulp`.
 
@@ -756,6 +762,25 @@ request reaches them, and then finish the running requests. A web pod is
 ready when it serves the login page. The API ping is not used for this,
 because with Katello it waits for Candlepin and Pulp, so their restart would
 remove every web pod from the Service.
+
+After a sudden node loss Kubernetes needs about 40 seconds to mark the node
+not ready; until then its pods stay behind their Services and part of the
+requests fail. A pod of the chart then stays on that node for
+`lostNodeTolerationSeconds` (60) before it is replaced elsewhere, where the
+Kubernetes default is 300. Workloads with two replicas serve from the other
+replica as soon as the node is marked; Candlepin, the Dynflow orchestrator and
+the Smart Proxy are unavailable until their pod is replaced.
+
+Three liveness checks restart a pod that is running but no longer working,
+which happens after a database failover or when Valkey disappears:
+
+| Pod | Liveness requires |
+| --- | --- |
+| Dynflow orchestrator | Sidekiq running and a `LISTEN` session of this pod in the database; without it remote execution jobs never finish |
+| Pulp content | a heartbeat of this pod in `core_appstatus` younger than 45 seconds; replicas fail 90 seconds apart, so they restart one at a time |
+| Pulp API | an answer from `/pulp/api/v3/status/` |
+
+The two database checks pass while the database cannot be reached.
 
 The `foreman-proxy` Helm chart has the same `podDisruptionBudget` and
 `topologySpread` values. They apply to httpd and, under the same storage

@@ -67,33 +67,41 @@ def node_container(runtime, node, action):
     return subprocess.run([runtime, action, node], capture_output=True, text=True, timeout=120)
 
 
-def ensure_web_spread(workers):
-    """web replicas across distinct workers. Earlier drain tests evict a web pod
-    and it does not move back after the node is uncordoned, so both replicas can
-    end up on one worker; a rollout restart re-spreads them while both workers
-    are schedulable."""
-    web_nodes = [name for name in nodes_of("web") if name in workers]
-    if len(set(web_nodes)) >= 2:
-        return web_nodes
-    kubectl("rollout", "restart", f"deployment/{WEB}")
-    kubectl("rollout", "status", f"deployment/{WEB}", "--timeout=600s", timeout=620)
-    wait_available(WEB)
-    return [name for name in nodes_of("web") if name in workers]
+def ensure_spread(component, deployment, workers):
+    """Replicas of a component across distinct workers. Earlier drain tests
+    evict a pod and it does not move back after the node is uncordoned, so both
+    replicas can end up on one worker; a rollout restart re-spreads them while
+    both workers are schedulable."""
+    nodes = [name for name in nodes_of(component) if name in workers]
+    if len(set(nodes)) >= 2:
+        return nodes
+    kubectl("rollout", "restart", f"deployment/{deployment}")
+    kubectl("rollout", "status", f"deployment/{deployment}", "--timeout=600s", timeout=620)
+    wait_available(deployment)
+    return [name for name in nodes_of(component) if name in workers]
 
 
 def test_sudden_node_loss_is_measured(workers, report, record_property):
     runtime = container_runtime()
     # Kill a worker that runs a web replica while another web replica stays on a
     # different worker, so the Service still has one live endpoint to recover to.
-    web_nodes = ensure_web_spread(workers)
+    # The same holds for httpd, which every request passes: the capsule drain
+    # leaves both httpd replicas on one worker, and losing that one keeps web
+    # unreachable until httpd is rescheduled, however web itself is spread.
+    web_nodes = ensure_spread("web", WEB, workers)
     if len(set(web_nodes)) < 2:
         pytest.skip(f"need web replicas on at least two workers, found {web_nodes}")
+    httpd_nodes = ensure_spread("httpd", HTTPD, workers)
+    if len(set(httpd_nodes)) < 2:
+        pytest.skip(f"need httpd replicas on at least two workers, found {httpd_nodes}")
     victim = web_nodes[0]
 
     client = Client("node-loss-client", ["web"])
     client.start()
     events = {
         "killed_node": victim,
+        "web_nodes": web_nodes,
+        "httpd_nodes": httpd_nodes,
         "runtime": runtime,
         "observe_seconds": OBSERVE,
         "ceiling_seconds": CEILING,

@@ -132,6 +132,34 @@ def test_spread_settings_are_values(render):
     assert constraint["whenUnsatisfiable"] == "DoNotSchedule"
 
 
+def lost_node_tolerations(deployment):
+    return {t["key"]: t["tolerationSeconds"] for t in pod_spec(deployment).get("tolerations", [])
+            if t.get("effect") == "NoExecute" and t.get("operator") == "Exists"}
+
+
+def test_pods_leave_a_lost_node_after_a_minute(render):
+    # Kubernetes waits 300 s by default; a single-replica component is gone
+    # for all of it.
+    keys = {"node.kubernetes.io/not-ready", "node.kubernetes.io/unreachable"}
+    deployments = list(render(EVERYTHING).of_kind("Deployment"))
+    assert {d["metadata"]["name"] for d in deployments} >= set(SINGLE) | set(REPLICATED) | set(PULP)
+    for deployment in deployments:
+        assert lost_node_tolerations(deployment) == dict.fromkeys(keys, 60), deployment["metadata"]["name"]
+    custom = render(merged(EVERYTHING, {"lostNodeTolerationSeconds": 120}))
+    for deployment in custom.of_kind("Deployment"):
+        assert set(lost_node_tolerations(deployment).values()) == {120}
+    for workload in render(EVERYTHING).of_kind("Job", "CronJob"):
+        spec = workload["spec"]
+        spec = spec["jobTemplate"]["spec"] if workload["kind"] == "CronJob" else spec
+        assert "tolerations" not in spec["template"]["spec"], workload["metadata"]["name"]
+
+
+def test_lost_node_toleration_can_be_left_to_the_cluster(render):
+    manifests = render(merged(EVERYTHING, {"lostNodeTolerationSeconds": None}))
+    for deployment in manifests.of_kind("Deployment"):
+        assert "tolerations" not in pod_spec(deployment), deployment["metadata"]["name"]
+
+
 def test_single_replica_components_ignore_replica_values(render):
     manifests = render(merged(TWO, {
         "dynflow": {"orchestrator": {"replicas": 3}},

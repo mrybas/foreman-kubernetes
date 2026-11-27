@@ -23,6 +23,14 @@ topologySpread:
   maxSkew: 1
   whenUnsatisfiable: ScheduleAnyway
 
+# Seconds a pod stays on a node that became not ready or unreachable before
+# Kubernetes replaces it elsewhere. Kubernetes' own default is 300: after a
+# sudden node loss Candlepin, the Dynflow orchestrator and the Smart Proxy,
+# which run one pod each, are then gone for more than five minutes on top of
+# the time it takes to notice the node. Applies to every Deployment of the
+# chart. Set null to keep the cluster default.
+lostNodeTolerationSeconds: 60
+
 # Every image value below takes repository, tag and digest. A digest
 # (sha256:...) takes precedence over the tag; pin digests for reproducible
 # installs and upgrades. The Foreman image is used by the web, Dynflow,

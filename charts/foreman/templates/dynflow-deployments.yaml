@@ -53,6 +53,7 @@ spec:
         runAsUser: 994
         seccompProfile:
           type: RuntimeDefault
+      {{- with include "foreman.lostNodeTolerations" $root }}{{ . | nindent 6 }}{{ end }}
       {{- with $root.Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -114,9 +115,11 @@ spec:
             {{- include "foreman.volumeMounts" $root | nindent 12 }}
           # Sidekiq sets its process title to "sidekiq <version> [N of M busy]"
           # once Dynflow is initialized. A passive orchestrator waiting for the
-          # lock has no such title. The image has no ps or pgrep. The probes
-          # are the same, so liveness restarts a Sidekiq that exited, not one
-          # that hangs.
+          # lock has no such title. The image has no ps or pgrep. For the
+          # workers liveness is the same check. The orchestrator also has to
+          # hold its LISTEN session in the database: after a database failover
+          # it can lose it and keep running, and remote execution jobs then
+          # never finish.
           startupProbe:
             exec:
               command: {{ $probe }}
@@ -128,8 +131,19 @@ spec:
             periodSeconds: 10
           livenessProbe:
             exec:
+              {{- if eq .name "orchestrator" }}
+              command:
+                - ruby
+                - -e
+                - |
+                  {{- $root.Files.Get "files/dynflow-orchestrator-liveness.rb" | nindent 18 }}
+              {{- else }}
               command: {{ $probe }}
+              {{- end }}
             periodSeconds: 20
+            {{- if eq .name "orchestrator" }}
+            timeoutSeconds: 10
+            {{- end }}
             failureThreshold: 3
           resources:
             {{- toYaml .resources | nindent 12 }}

@@ -41,5 +41,5 @@ drained or lost, until Kubernetes starts a replacement pod.
 | Service | Used by | State | Limits |
 | --- | --- | --- | --- |
 | PostgreSQL | Foreman, Candlepin, Pulp, the container gateway | Every database | Tested with PostgreSQL 16 in a single pod. `tools/backup.sh` dumps the databases of both charts, including the container gateway database. Availability and replication are up to the database operator |
-| Valkey or Redis | Dynflow, the Rails cache, Pulp | Task queue and caches | Not backed up. Tested only without Transport Layer Security (TLS); a private certificate authority for Dynflow's Redis connection needs [foreman#11304](https://github.com/theforeman/foreman/pull/11304) |
+| Valkey or Redis | Dynflow, the Rails cache, Pulp | Task queue and caches | Not backed up. Tested only without Transport Layer Security (TLS); a private certificate authority for Dynflow's Redis connection needs [foreman#11304](https://github.com/theforeman/foreman/pull/11304). One instance is a single point of failure for all three; give Pulp timeouts in its URL, see [Enable Pulp](quick-start.md#enable-pulp) |
 | S3-compatible object store | Pulp with `pulp.storage.type=s3` | Pulp content | Tested with MinIO. Not backed up by `tools/backup.sh` |

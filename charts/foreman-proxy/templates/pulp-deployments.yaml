@@ -75,11 +75,29 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 3
           livenessProbe:
-            tcpSocket:
+            {{- if eq .name "content" }}
+            # The content app keeps its port open and answers /pulp/content/
+            # after it stopped recording heartbeats, which happens after a
+            # database failover. This check asks the database instead.
+            exec:
+              command:
+                - python3
+                - -c
+                - |
+                  {{- $.Files.Get "files/pulp-content-liveness.py" | nindent 18 }}
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+            {{- else }}
+            # Not the TCP port: with Valkey gone without a reset (its node lost)
+            # the API kept the port open while this endpoint hung for minutes.
+            httpGet:
+              path: {{ .probePath }}
               port: http
             periodSeconds: 20
-            timeoutSeconds: 5
+            timeoutSeconds: 10
             failureThreshold: 6
+            {{- end }}
           {{- end }}
           resources:
             {{- toYaml .values.resources | nindent 12 }}

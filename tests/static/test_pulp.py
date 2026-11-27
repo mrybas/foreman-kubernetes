@@ -212,7 +212,20 @@ def test_services_and_probes(pulp):
         assert {p["name"]: p["containerPort"] for p in container["ports"]} == {"http": port}
         for probe in ("startupProbe", "readinessProbe"):
             assert container[probe]["httpGet"] == {"path": path, "port": "http"}
-        assert container["livenessProbe"]["tcpSocket"] == {"port": "http"}
+        liveness = container["livenessProbe"]
+        if name == "content":
+            # Heartbeats in the database, not the port: see the script.
+            python, flag, script = liveness["exec"]["command"]
+            assert (python, flag) == ("python3", "-c")
+            compile(script, "pulp-content-liveness.py", "exec")
+            assert "core_appstatus" in script and "PULP_DATABASES__default__PASSWORD" in script
+            assert "except psycopg.OperationalError:\n    sys.exit(0)" in script, \
+                "an unreachable database must pass"
+            assert liveness["timeoutSeconds"] >= 5
+        else:
+            # The status endpoint: an open port says nothing about a hung API.
+            assert liveness["httpGet"] == {"path": path, "port": "http"}
+            assert liveness["periodSeconds"] * liveness["failureThreshold"] >= 120
 
 
 def test_selectors_do_not_overlap(pulp):

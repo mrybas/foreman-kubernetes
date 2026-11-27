@@ -24,6 +24,7 @@ spec:
       automountServiceAccountToken: false
       securityContext:
         {{- include "candlepin.podSecurityContext" . | nindent 8 }}
+      {{- with include "foreman.lostNodeTolerations" . }}{{ . | nindent 6 }}{{ end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

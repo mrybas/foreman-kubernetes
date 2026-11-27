@@ -575,11 +575,30 @@ before migrate or any process starts.
 /var/lib/pulp/tmp /var/lib/pulp/assets /var/lib/pulp/media /var/lib/pulp/sync_imports /var/lib/pulp/imports /var/lib/pulp/exports
 {{- end }}
 
+{{/*
+Tolerations that bound how long a pod waits on a lost node; indent 0. Empty
+when lostNodeTolerationSeconds is null.
+*/}}
+{{- define "foreman.lostNodeTolerations" -}}
+{{- if not (kindIs "invalid" .Values.lostNodeTolerationSeconds) }}
+tolerations:
+  {{- range list "node.kubernetes.io/not-ready" "node.kubernetes.io/unreachable" }}
+  - key: {{ . }}
+    operator: Exists
+    effect: NoExecute
+    tolerationSeconds: {{ $.Values.lostNodeTolerationSeconds | int }}
+  {{- end }}
+{{- end }}
+{{- end }}
+
 {{/* Runtime pod spec parts shared by api, content and worker. */}}
 {{- define "pulp.podSpec" -}}
 automountServiceAccountToken: false
 securityContext:
   {{- include "pulp.podSecurityContext" . | nindent 2 }}
+{{- with include "foreman.lostNodeTolerations" . }}
+{{ . }}
+{{- end }}
 {{- with .Values.imagePullSecrets }}
 imagePullSecrets:
   {{- toYaml . | nindent 2 }}
